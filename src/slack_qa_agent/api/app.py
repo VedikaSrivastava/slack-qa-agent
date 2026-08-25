@@ -31,7 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/readyz")
-    async def readiness() -> JSONResponse:
+    def readiness() -> JSONResponse:
         database_exists = Path(settings.knowledge_db_path).is_file()
         payload = {
             "status": "ready" if database_exists else "not_ready",
