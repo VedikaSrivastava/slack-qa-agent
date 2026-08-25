@@ -7,7 +7,7 @@ construction here makes the agent independently invokable from Slack, Inngest, a
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
@@ -24,7 +24,9 @@ def build_graph(answer_node: AgentNode) -> Any:
     """
 
     builder = StateGraph(AgentState)
-    builder.add_node("answer", answer_node)
+    # LangGraph accepts async callables here, but its public overloads are stricter
+    # than this injected protocol, so keep the cast localized at the library boundary.
+    builder.add_node("answer", cast(Any, answer_node))
     builder.add_edge(START, "answer")
     builder.add_edge("answer", END)
     return builder.compile()
