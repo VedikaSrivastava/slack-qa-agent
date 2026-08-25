@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local data and runtime state
+data/*.sqlite
+data/*.sqlite-*
+!data/.gitkeep
+.runtime/
+
+# LangGraph / LangSmith local state
+.langgraph_api/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Recordings and generated reports
+recordings/
+evals/reports/
