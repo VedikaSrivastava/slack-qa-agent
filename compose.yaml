@@ -1,0 +1,86 @@
+name: slack-qa-agent
+
+x-app-environment: &app-environment
+  APP_ENV: development
+  LOG_LEVEL: INFO
+  APP_VERSION: dev
+  PROMPT_VERSION: v1
+  RETRIEVAL_VERSION: v1
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  LANGSMITH_TRACING: "true"
+  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+  LANGSMITH_PROJECT: slack-qa-agent
+  SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+  SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+  DATABASE_URL: ${DATABASE_URL}
+  KNOWLEDGE_DB_PATH: /app/data/synthetic_startup.sqlite
+  INNGEST_DEV: "1"
+  INNGEST_BASE_URL: http://inngest:8288
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: slack_qa
+      POSTGRES_USER: slack_qa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: runtime
+    environment: *app-environment
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head && python -m knowledge_assistant.persistence.checkpoints
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runtime
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    volumes:
+      - type: bind
+        source: ./data/synthetic_startup.sqlite
+        target: /app/data/synthetic_startup.sqlite
+        read_only: true
+      - type: bind
+        source: ./evals/results
+        target: /app/evals/results
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  inngest:
+    image: inngest/inngest:v1.43.0
+    command: ["inngest", "dev", "-u", "http://app:8000/api/inngest"]
+    ports:
+      - "8288:8288"
+      - "8289:8289"
+    depends_on:
+      app:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

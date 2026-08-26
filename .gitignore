@@ -21,7 +21,9 @@ venv/
 data/*.sqlite
 data/*.sqlite-*
 !data/.gitkeep
+applied-ai-take-home-database-main/
 .runtime/
+.tmp/
 
 # LangGraph / LangSmith local state
 .langgraph_api/

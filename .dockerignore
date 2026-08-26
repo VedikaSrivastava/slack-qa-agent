@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+.runtime
+.env
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+data/*.sqlite
+data/*.sqlite-*
+evals/reports
+DESIGN.md
