@@ -37,6 +37,12 @@ def inspect_database(path: Path) -> None:
             count = connection.execute(f"SELECT COUNT(*) FROM {quoted_name}").fetchone()[0]
             print(f"[{name}] rows={count}")
             print(sql or "<no schema>")
+            indexes = connection.execute(f"PRAGMA index_list({quoted_name})").fetchall()
+            foreign_keys = connection.execute(f"PRAGMA foreign_key_list({quoted_name})").fetchall()
+            if indexes:
+                print(f"indexes={indexes}")
+            if foreign_keys:
+                print(f"foreign_keys={foreign_keys}")
             print()
     finally:
         connection.close()

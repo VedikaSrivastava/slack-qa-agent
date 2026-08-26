@@ -3,8 +3,22 @@
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping, MutableMapping
+from typing import Any
 
 import structlog
+
+_SECRET_KEY = re.compile(r"(authorization|api[_-]?key|token|secret|password)", re.IGNORECASE)
+
+
+def _redact_secrets(
+    _logger: Any, _method_name: str, event_dict: MutableMapping[str, Any]
+) -> Mapping[str, Any]:
+    for key in list(event_dict):
+        if _SECRET_KEY.search(key):
+            event_dict[key] = "[REDACTED]"
+    return event_dict
 
 
 def configure_logging(level: str) -> None:
@@ -16,6 +30,7 @@ def configure_logging(level: str) -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            _redact_secrets,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
@@ -26,3 +41,11 @@ def configure_logging(level: str) -> None:
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+
+def bind_run_context(**values: str) -> None:
+    structlog.contextvars.bind_contextvars(**values)
+
+
+def clear_run_context() -> None:
+    structlog.contextvars.clear_contextvars()

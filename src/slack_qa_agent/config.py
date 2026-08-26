@@ -6,45 +6,119 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+SETTINGS_CONFIG = SettingsConfigDict(
+    env_file=".env",
+    env_file_encoding="utf-8",
+    extra="ignore",
+    case_sensitive=False,
+)
 
-class Settings(BaseSettings):
-    """Runtime settings. Secrets remain optional so health checks can run before setup."""
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-        case_sensitive=False,
-    )
+class DatabaseSettings(BaseSettings):
+    """Database-only configuration used by migrations and checkpoint setup."""
+
+    model_config = SETTINGS_CONFIG
+
+    database_url: SecretStr
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+        raw_value = value.get_secret_value()
+        if not raw_value.strip():
+            raise ValueError("DATABASE_URL must not be blank")
+        if not raw_value.startswith("postgresql+asyncpg://"):
+            raise ValueError("DATABASE_URL must use the postgresql+asyncpg:// scheme")
+        return value
+
+    def sqlalchemy_database_url(self) -> str:
+        return self.database_url.get_secret_value()
+
+    def psycopg_database_url(self) -> str:
+        """Return a psycopg-compatible URL for LangGraph checkpoint storage."""
+
+        return self.sqlalchemy_database_url().replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+class AgentSettings(DatabaseSettings):
+    """Configuration required to execute and trace the grounded agent."""
 
     app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
+    app_version: str = "dev"
+    prompt_version: str = "v1"
+    retrieval_version: str = "v1"
 
-    openai_api_key: SecretStr | None = None
-    openai_model: str | None = None
+    openai_api_key: SecretStr
+    knowledge_db_path: Path
 
-    slack_bot_token: SecretStr | None = None
-    slack_signing_secret: SecretStr | None = None
+    inngest_dev: bool = True
+    inngest_base_url: str | None = None
+    inngest_event_key: SecretStr | None = None
+    inngest_signing_key: SecretStr | None = None
 
-    knowledge_db_path: Path = Path("data/synthetic_startup.sqlite")
-    checkpoint_db_path: Path = Path(".runtime/checkpoints.sqlite")
+    langsmith_tracing: Literal[True]
+    langsmith_api_key: SecretStr
+    langsmith_project: Literal["slack-qa-agent"]
 
-    @property
-    def slack_configured(self) -> bool:
-        return self.slack_bot_token is not None and self.slack_signing_secret is not None
+    @field_validator(
+        "openai_api_key",
+        "langsmith_api_key",
+        mode="after",
+    )
+    @classmethod
+    def reject_blank_secrets(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("required configuration values must not be blank")
+        return value
 
-    @property
-    def agent_configured(self) -> bool:
-        return self.openai_api_key is not None and bool(self.openai_model)
+    @model_validator(mode="after")
+    def validate_environment_contract(self) -> AgentSettings:
+        if self.app_env == "production":
+            if self.inngest_dev:
+                raise ValueError("INNGEST_DEV must be false in production")
+            if self.inngest_event_key is None or not self.inngest_event_key.get_secret_value():
+                raise ValueError("INNGEST_EVENT_KEY is required in production")
+            if self.inngest_signing_key is None or not self.inngest_signing_key.get_secret_value():
+                raise ValueError("INNGEST_SIGNING_KEY is required in production")
+        return self
 
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
 
 
+class ExperimentSettings(AgentSettings):
+    """Strict settings for local and LangSmith evaluation runs."""
+
+
+class Settings(AgentSettings):
+    """Validated Slack runtime settings; invalid configuration stops startup."""
+
+    slack_bot_token: SecretStr
+    slack_signing_secret: SecretStr
+
+    @field_validator("slack_bot_token", "slack_signing_secret", mode="after")
+    @classmethod
+    def reject_blank_slack_secrets(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("required Slack configuration values must not be blank")
+        return value
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+@lru_cache(maxsize=1)
+def get_database_settings() -> DatabaseSettings:
+    return DatabaseSettings()
+
+
+@lru_cache(maxsize=1)
+def get_experiment_settings() -> ExperimentSettings:
+    return ExperimentSettings()

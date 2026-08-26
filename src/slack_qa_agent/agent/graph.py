@@ -1,32 +1,43 @@
-"""LangGraph construction entry point.
-
-The initial scaffold intentionally leaves retrieval nodes unimplemented. Keeping graph
-construction here makes the agent independently invokable from Slack, Inngest, and evals.
-"""
+"""Bounded LangGraph construction with one retrieval refinement and one repair."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
+from slack_qa_agent.agent.nodes import AgentNodes
 from slack_qa_agent.agent.state import AgentState
 
-AgentNode = Callable[[AgentState], Awaitable[dict[str, Any]]]
 
-
-def build_graph(answer_node: AgentNode) -> Any:
-    """Build the smallest executable graph around an injected answer node.
-
-    Retrieval planning, evidence grading, and bounded refinement will be added as
-    explicit nodes once the database schema and eval baseline are understood.
-    """
-
+def build_graph(nodes: AgentNodes, *, checkpointer: Any = None) -> Any:
     builder = StateGraph(AgentState)
-    # LangGraph accepts async callables here, but its public overloads are stricter
-    # than this injected protocol, so keep the cast localized at the library boundary.
-    builder.add_node("answer", cast(Any, answer_node))
-    builder.add_edge(START, "answer")
-    builder.add_edge("answer", END)
-    return builder.compile()
+    builder.add_node("resolve_question", cast(Any, nodes.resolve_question))
+    builder.add_node("plan_retrieval", cast(Any, nodes.plan_retrieval))
+    builder.add_node("execute_retrieval", cast(Any, nodes.execute_retrieval))
+    builder.add_node("grade_evidence", cast(Any, nodes.grade_evidence))
+    builder.add_node("refine_retrieval", cast(Any, nodes.refine_retrieval))
+    builder.add_node("generate_answer", cast(Any, nodes.generate_answer))
+    builder.add_node("verify_grounding", cast(Any, nodes.verify_grounding))
+    builder.add_node("repair_answer", cast(Any, nodes.repair_answer))
+    builder.add_node("finalize", cast(Any, nodes.finalize))
+
+    builder.add_edge(START, "resolve_question")
+    builder.add_edge("resolve_question", "plan_retrieval")
+    builder.add_edge("plan_retrieval", "execute_retrieval")
+    builder.add_edge("execute_retrieval", "grade_evidence")
+    builder.add_conditional_edges(
+        "grade_evidence",
+        nodes.route_after_grade,
+        {"refine": "refine_retrieval", "generate": "generate_answer"},
+    )
+    builder.add_edge("refine_retrieval", "execute_retrieval")
+    builder.add_edge("generate_answer", "verify_grounding")
+    builder.add_conditional_edges(
+        "verify_grounding",
+        nodes.route_after_verify,
+        {"finalize": "finalize", "repair": "repair_answer"},
+    )
+    builder.add_edge("repair_answer", "finalize")
+    builder.add_edge("finalize", END)
+    return builder.compile(checkpointer=checkpointer)
