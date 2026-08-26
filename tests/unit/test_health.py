@@ -16,9 +16,6 @@ def _settings(tmp_path: Path) -> SlackApplicationSettings:
         slack_signing_secret="test-signing-secret",
         database_url="postgresql+asyncpg://user:password@127.0.0.1:1/test",
         knowledge_db_path=tmp_path / "missing.sqlite",
-        langsmith_tracing=True,
-        langsmith_api_key="test-langsmith-key",
-        langsmith_project="slack-qa-agent",
     )
 
 

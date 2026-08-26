@@ -17,7 +17,13 @@ from slack_sdk.web.async_client import AsyncWebClient
 from knowledge_assistant.agent.processor import create_question_processor
 from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE
 from knowledge_assistant.application.question_processor import QuestionProcessor
-from knowledge_assistant.config import SlackApplicationSettings, get_slack_application_settings
+from knowledge_assistant.config import (
+    APPLICATION_VERSION,
+    PROMPT_VERSION,
+    RETRIEVAL_VERSION,
+    SlackApplicationSettings,
+    get_slack_application_settings,
+)
 from knowledge_assistant.execution.dispatcher import InngestQuestionDispatcher
 from knowledge_assistant.execution.inngest import create_inngest_client, create_question_function
 from knowledge_assistant.integrations.slack.app import create_slack_app
@@ -43,7 +49,7 @@ def create_app(settings: SlackApplicationSettings | None = None) -> FastAPI:
             yield
         await engine.dispose()
 
-    app = FastAPI(title="Slack Q&A Agent", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Slack Q&A Agent", version=APPLICATION_VERSION, lifespan=lifespan)
     inngest_client = create_inngest_client(settings)
 
     @app.middleware("http")
@@ -80,8 +86,8 @@ def create_app(settings: SlackApplicationSettings | None = None) -> FastAPI:
 
     ledger = PostgresRunLedger(
         engine,
-        prompt_version=settings.prompt_version,
-        retrieval_version=settings.retrieval_version,
+        prompt_version=PROMPT_VERSION,
+        retrieval_version=RETRIEVAL_VERSION,
         model_name=PRODUCTION_PROFILE.model_name,
     )
     dispatcher = InngestQuestionDispatcher(inngest_client)

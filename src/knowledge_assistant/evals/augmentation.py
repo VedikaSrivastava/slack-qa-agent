@@ -15,7 +15,7 @@ from langsmith import Client, tracing_context
 from langsmith.schemas import Dataset
 from pydantic import BaseModel, Field
 
-from knowledge_assistant.config import EvaluationSettings
+from knowledge_assistant.config import LANGSMITH_PROJECT_NAME, EvaluationSettings
 from knowledge_assistant.evals.langsmith_dataset import DATASET_NAME, dataset_digest
 from knowledge_assistant.evals.models import EvalCase
 
@@ -73,7 +73,7 @@ async def _generate_candidate_questions(
     ).with_structured_output(CandidateBatch)
     generated_candidates: list[GeneratedCandidate] = []
     with tracing_context(
-        project_name=settings.langsmith_project,
+        project_name=LANGSMITH_PROJECT_NAME,
         enabled=True,
         client=client,
         tags=["eval-augmentation", AUGMENTATION_DATASET_VERSION],

@@ -1,4 +1,4 @@
-"""Schema-aware, read-only access to the supplied SQLite knowledge database."""
+"""Strict, read-only access to the supplied SQLite knowledge database."""
 
 from __future__ import annotations
 
@@ -16,11 +16,7 @@ from knowledge_assistant.retrieval.models import (
     SearchHit,
     SearchKnowledgeInput,
 )
-from knowledge_assistant.retrieval.schema import (
-    KnowledgeSchema,
-    discover_knowledge_schema,
-    quote_identifier,
-)
+from knowledge_assistant.retrieval.schema import KnowledgeSchema, validate_knowledge_schema
 
 MAX_STRUCTURED_EVIDENCE_CHARS = 1_500
 
@@ -33,7 +29,7 @@ def _fts_query(value: str) -> str:
     """Convert user/model text to literal FTS tokens, excluding FTS operators."""
 
     tokens = re.findall(r"[A-Za-z0-9_./:-]+", value)[:32]
-    # OR is intentionally recall-first; the bounded grading stage decides relevance.
+    # OR is recall-first; the bounded grading stage decides relevance.
     return " OR ".join(f'"{token}"' for token in tokens)
 
 
@@ -88,64 +84,49 @@ def _build_account_lookup_query(request: AccountLookupInput) -> tuple[str, list[
 class SQLiteKnowledgeRepository:
     def __init__(self, path: Path) -> None:
         self._path = path
+        self._validated_schema: KnowledgeSchema | None = None
 
     def inspect_schema(self) -> KnowledgeSchema:
-        with open_read_only_database(self._path) as connection:
-            return discover_knowledge_schema(connection)
+        return self.validate_runtime_schema()
 
     def validate_runtime_schema(self) -> KnowledgeSchema:
-        """Validate every table and relationship required by runtime retrieval."""
-
         with open_read_only_database(self._path) as connection:
-            schema = discover_knowledge_schema(connection)
-            connection.execute(
-                """
-                SELECT c.name, c.region, c.country, p.name, s.pain_point, s.trigger_event
-                FROM customers AS c
-                JOIN implementations AS i ON i.customer_id = c.customer_id
-                JOIN products AS p ON p.product_id = i.product_id
-                JOIN scenarios AS s ON s.scenario_id = c.scenario_id
-                LIMIT 0
-                """
-            )
-            return schema
+            return self._require_schema(connection)
 
     def search(self, request: SearchKnowledgeInput) -> list[SearchHit]:
         with open_read_only_database(self._path) as connection:
-            schema = discover_knowledge_schema(connection)
-            rows = self._search_rows(connection, schema, request)
+            schema = self._require_schema(connection)
+            rows = self._search_fts_rows(connection, request)
         return [self._to_search_hit(row, schema) for row in rows]
 
     def read(self, request: ReadArtifactsInput) -> list[EvidenceItem]:
         with open_read_only_database(self._path) as connection:
-            schema = discover_knowledge_schema(connection)
-            ids = request.artifact_ids
-            placeholders = ",".join("?" for _ in ids)
+            schema = self._require_schema(connection)
+            placeholders = ",".join("?" for _ in request.artifact_ids)
             rows = connection.execute(
-                f"SELECT * FROM {quote_identifier(schema.artifact_table)} "
-                f"WHERE {quote_identifier(schema.id_column)} IN ({placeholders})",
-                ids,
+                f"SELECT * FROM artifacts WHERE artifact_id IN ({placeholders})",
+                request.artifact_ids,
             ).fetchall()
 
-        by_id = {str(row[schema.id_column]): row for row in rows}
+        by_id = {str(row["artifact_id"]): row for row in rows}
         remaining = request.max_context_chars
         evidence: list[EvidenceItem] = []
-        for artifact_id in ids:
+        for artifact_id in request.artifact_ids:
             row = by_id.get(artifact_id)
             if row is None or remaining <= 0:
                 continue
-            content = str(row[schema.content_column] or "")[:remaining]
+            content = str(row["content_text"] or "")[:remaining]
             remaining -= len(content)
             hit = self._to_search_hit(row, schema)
             evidence.append(EvidenceItem(**hit.model_dump(), content=content))
         return evidence
 
     def lookup_accounts(self, request: AccountLookupInput) -> list[EvidenceItem]:
-        """Return one representative artifact per account using fixed, parameterized joins."""
+        """Return one representative artifact per account using parameterized joins."""
 
         query, query_parameters = _build_account_lookup_query(request)
         with open_read_only_database(self._path) as connection:
-            schema = discover_knowledge_schema(connection)
+            schema = self._require_schema(connection)
             rows = connection.execute(query, query_parameters).fetchall()
 
         representative_evidence: list[EvidenceItem] = []
@@ -163,128 +144,73 @@ class SQLiteKnowledgeRepository:
                     "product": row["_product_name"],
                     "pain_point": row["_pain_point"],
                     "trigger_event": row["_trigger_event"],
-                    "artifact_excerpt": str(row[schema.content_column] or ""),
+                    "artifact_excerpt": str(row["content_text"] or ""),
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
             )[:MAX_STRUCTURED_EVIDENCE_CHARS]
             hit = self._to_search_hit(row, schema)
-            # One artifact per account keeps cross-account context bounded and balanced.
             representative_evidence.append(EvidenceItem(**hit.model_dump(), content=content))
             if len(representative_evidence) >= request.limit:
                 break
         return representative_evidence
 
-    def _search_rows(
-        self,
-        connection: sqlite3.Connection,
-        schema: KnowledgeSchema,
-        request: SearchKnowledgeInput,
-    ) -> list[sqlite3.Row]:
-        table = quote_identifier(schema.artifact_table)
-        filter_clauses: list[str] = []
-        filter_parameters: list[Any] = []
-        if request.filters.artifact_type:
-            if schema.type_column is None:
-                return []
-            filter_clauses.append(f"a.{quote_identifier(schema.type_column)} = ?")
-            filter_parameters.append(request.filters.artifact_type)
-        if request.filters.customer:
-            if schema.customer_column is None:
-                return []
-            filter_clauses.append(f"a.{quote_identifier(schema.customer_column)} = ?")
-            filter_parameters.append(request.filters.customer)
-
-        if schema.fts_table:
-            return self._search_fts_rows(
-                connection, schema, request, table, filter_clauses, filter_parameters
-            )
-        return self._search_lexical_rows(
-            connection, schema, request, table, filter_clauses, filter_parameters
-        )
+    def _require_schema(self, connection: sqlite3.Connection) -> KnowledgeSchema:
+        if self._validated_schema is None:
+            self._validated_schema = validate_knowledge_schema(connection)
+        return self._validated_schema
 
     @staticmethod
     def _search_fts_rows(
         connection: sqlite3.Connection,
-        schema: KnowledgeSchema,
         request: SearchKnowledgeInput,
-        artifact_table: str,
-        filter_clauses: list[str],
-        filter_parameters: list[Any],
     ) -> list[sqlite3.Row]:
         fts_query = _fts_query(request.query)
-        if not fts_query or schema.fts_table is None:
-            return []
-        fts_table = quote_identifier(schema.fts_table)
-        join_condition = (
-            f"a.{quote_identifier(schema.id_column)} = "
-            f"{fts_table}.{quote_identifier(schema.fts_id_column)}"
-            if schema.fts_id_column
-            else f"a.rowid = {fts_table}.rowid"
-        )
-        where_clauses = [f"{fts_table} MATCH ?", *filter_clauses]
+        if not fts_query:
+            raise ValueError("search query does not contain any FTS-compatible tokens")
+
+        filter_clauses: list[str] = []
+        filter_parameters: list[Any] = []
+        if request.filters.artifact_type:
+            filter_clauses.append("a.artifact_type = ?")
+            filter_parameters.append(request.filters.artifact_type)
+
+        where_clauses = ["artifacts_fts MATCH ?", *filter_clauses]
         query = (
-            f"SELECT a.*, bm25({fts_table}) AS _retrieval_score FROM {fts_table} "
-            f"JOIN {artifact_table} AS a ON {join_condition} "
+            "SELECT a.*, bm25(artifacts_fts) AS _retrieval_score FROM artifacts_fts "
+            "JOIN artifacts AS a ON a.artifact_id = artifacts_fts.artifact_id "
             f"WHERE {' AND '.join(where_clauses)} ORDER BY _retrieval_score LIMIT ?"
         )
-        parameters = [fts_query, *filter_parameters, request.limit]
-        return connection.execute(query, parameters).fetchall()
-
-    @staticmethod
-    def _search_lexical_rows(
-        connection: sqlite3.Connection,
-        schema: KnowledgeSchema,
-        request: SearchKnowledgeInput,
-        artifact_table: str,
-        filter_clauses: list[str],
-        filter_parameters: list[Any],
-    ) -> list[sqlite3.Row]:
-
-        terms = [term for term in re.findall(r"[A-Za-z0-9_-]+", request.query) if len(term) > 1]
-        if not terms:
-            return []
-        lexical_clauses: list[str] = []
-        lexical_parameters: list[str] = []
-        for term in terms[:8]:
-            lexical_clauses.append(
-                f"(a.{quote_identifier(schema.title_column)} LIKE ? ESCAPE '\\' "
-                f"OR a.{quote_identifier(schema.content_column)} LIKE ? ESCAPE '\\')"
-            )
-            escaped = _escape_like_pattern(term)
-            lexical_parameters.extend([f"%{escaped}%", f"%{escaped}%"])
-        where_clauses = [f"({' OR '.join(lexical_clauses)})", *filter_clauses]
-        query = f"SELECT a.*, NULL AS _retrieval_score FROM {artifact_table} AS a WHERE "
-        query += (
-            " AND ".join(where_clauses)
-            + f" ORDER BY a.{quote_identifier(schema.title_column)} LIMIT ?"
-        )
         return connection.execute(
-            query, [*lexical_parameters, *filter_parameters, request.limit]
+            query,
+            [fts_query, *filter_parameters, request.limit],
         ).fetchall()
 
     @staticmethod
     def _to_search_hit(row: sqlite3.Row, schema: KnowledgeSchema) -> SearchHit:
-        content = str(row[schema.content_column] or "")
-        summary = str(row[schema.summary_column] or "") if schema.summary_column else ""
-        raw_metadata = row[schema.metadata_column] if schema.metadata_column else None
+        content = str(row["content_text"] or "")
+        raw_metadata = row["metadata_json"]
         metadata: dict[str, Any] = {}
         if raw_metadata:
             try:
                 parsed = json.loads(str(raw_metadata))
-                if isinstance(parsed, dict):
-                    metadata = parsed
-            except json.JSONDecodeError:
-                metadata = {"raw": str(raw_metadata)[:1_000]}
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid metadata_json for artifact {row['artifact_id']}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    f"metadata_json must be an object for artifact {row['artifact_id']}"
+                )
+            metadata = parsed
+
         keys = set(row.keys())
         raw_score = row["_retrieval_score"] if "_retrieval_score" in keys else None
         return SearchHit(
             artifact_id=str(row[schema.id_column]),
             title=str(row[schema.title_column]),
-            artifact_type=str(row[schema.type_column])
-            if schema.type_column and row[schema.type_column]
-            else None,
-            snippet=(summary or content)[:500],
+            artifact_type=str(row[schema.type_column]) if row[schema.type_column] else None,
+            snippet=(str(row[schema.summary_column] or "") or content)[:500],
             score=float(raw_score) if raw_score is not None else None,
             metadata=metadata,
         )

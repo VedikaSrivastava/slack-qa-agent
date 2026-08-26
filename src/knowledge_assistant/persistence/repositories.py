@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -145,7 +144,6 @@ class PostgresRunLedger:
                     retrieval_round_count=response.retrieval_round_count,
                     input_tokens=response.input_tokens,
                     output_tokens=response.output_tokens,
-                    estimated_cost_usd=response.estimated_cost_usd,
                     insufficient_evidence=response.insufficient_evidence,
                     result_json=response.model_dump(mode="json"),
                     error_code=None,
@@ -206,8 +204,3 @@ class PostgresRunLedger:
     async def _update(self, run_id: uuid.UUID, **values: Any) -> None:
         async with self._engine.begin() as connection:
             await connection.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
-
-
-def statuses_are_terminal(statuses: Sequence[str]) -> bool:
-    terminal = {RunStatus.SUCCEEDED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
-    return all(status in terminal for status in statuses)

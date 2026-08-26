@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from knowledge_assistant.retrieval.models import (
     AccountLookupInput,
     ReadArtifactsInput,
@@ -15,19 +17,34 @@ def _database(path: Path) -> None:
         """
         CREATE TABLE artifacts (
             artifact_id TEXT PRIMARY KEY,
+            scenario_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
             title TEXT NOT NULL,
-            content TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            content_text TEXT NOT NULL,
             artifact_type TEXT,
             metadata_json TEXT
         );
         CREATE VIRTUAL TABLE artifacts_fts USING fts5(
-            title, content, content='artifacts', content_rowid='rowid'
+            artifact_id UNINDEXED, title, summary, content_text
+        );
+        CREATE TABLE customers (
+            customer_id TEXT PRIMARY KEY, scenario_id TEXT, name TEXT, region TEXT, country TEXT
+        );
+        CREATE TABLE products (product_id TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE implementations (customer_id TEXT, product_id TEXT);
+        CREATE TABLE scenarios (
+            scenario_id TEXT PRIMARY KEY, pain_point TEXT, trigger_event TEXT
         );
         INSERT INTO artifacts VALUES (
-            'a1', 'Verdant Bay runbook', 'Approved live patch window is Saturday 02:00 UTC.',
-            'runbook', '{"customer":"Verdant Bay"}'
+            'a1', 's1', '2026-01-01', 'Verdant Bay runbook', 'Approved patch window',
+            'Approved live patch window is Saturday 02:00 UTC.', 'runbook',
+            '{"customer":"Verdant Bay"}'
         );
-        INSERT INTO artifacts_fts(artifacts_fts) VALUES ('rebuild');
+        INSERT INTO artifacts_fts VALUES (
+            'a1', 'Verdant Bay runbook', 'Approved patch window',
+            'Approved live patch window is Saturday 02:00 UTC.'
+        );
         """
     )
     connection.commit()
@@ -57,6 +74,18 @@ def test_search_input_is_parameterized(tmp_path: Path) -> None:
     assert repository.inspect_schema().artifact_table == "artifacts"
 
 
+def test_missing_fts_schema_fails_instead_of_falling_back(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.sqlite"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE artifacts (artifact_id TEXT, title TEXT, content_text TEXT)")
+    connection.commit()
+    connection.close()
+    repository = SQLiteKnowledgeRepository(path)
+
+    with pytest.raises(RuntimeError, match="schema is missing"):
+        repository.search(SearchKnowledgeInput(query="customer"))
+
+
 def test_structured_account_lookup_uses_allowlisted_relational_filters(tmp_path: Path) -> None:
     path = tmp_path / "accounts.sqlite"
     connection = sqlite3.connect(path)
@@ -74,6 +103,9 @@ def test_structured_account_lookup_uses_allowlisted_relational_filters(tmp_path:
             artifact_id TEXT PRIMARY KEY, scenario_id TEXT, artifact_type TEXT, title TEXT,
             created_at TEXT, summary TEXT, content_text TEXT, metadata_json TEXT
         );
+        CREATE VIRTUAL TABLE artifacts_fts USING fts5(
+            artifact_id UNINDEXED, title, summary, content_text
+        );
         INSERT INTO products VALUES ('p1', 'Event Nexus');
         INSERT INTO customers VALUES
             ('c1', 's1', 'Search Corp', 'North America West', 'United States'),
@@ -87,6 +119,9 @@ def test_structured_account_lookup_uses_allowlisted_relational_filters(tmp_path:
              'Search evidence', '{}'),
             ('a2', 's2', 'support_ticket', 'Dedupe issue', '2026-01-01', 'Dedupe summary',
              'Dedupe evidence', '{}');
+        INSERT INTO artifacts_fts VALUES
+            ('a1', 'Search issue', 'Search summary', 'Search evidence'),
+            ('a2', 'Dedupe issue', 'Dedupe summary', 'Dedupe evidence');
         """
     )
     connection.commit()

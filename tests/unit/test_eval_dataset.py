@@ -73,6 +73,12 @@ def test_experiment_profiles_are_code_defined_and_unknown_names_fail() -> None:
         get_experiment_profile("from-an-env-var")
 
 
+def test_production_evidence_budget_can_cover_every_official_source_set() -> None:
+    largest_source_set = max(len(case.expected_source_ids) for case in load_cases("full"))
+
+    assert PRODUCTION_PROFILE.max_artifacts >= largest_source_set
+
+
 def test_offline_experiment_protocols_are_bounded_and_code_defined() -> None:
     assert get_experiment_protocol("screening") is SCREENING_PROTOCOL
     assert SCREENING_PROTOCOL.repetitions == 1

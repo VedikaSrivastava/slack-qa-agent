@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -12,13 +11,19 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from knowledge_assistant.agent.citations import cited_artifact_ids
 from knowledge_assistant.agent.graph import build_graph
 from knowledge_assistant.agent.models import AgentResponse, EvidenceReference
 from knowledge_assistant.agent.profiles import AgentProfile
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.workflow_nodes import GroundedAnswerNodes
 from knowledge_assistant.application.question_processor import QuestionProcessor
-from knowledge_assistant.config import AgentRuntimeSettings
+from knowledge_assistant.config import (
+    APPLICATION_VERSION,
+    PROMPT_VERSION,
+    RETRIEVAL_VERSION,
+    AgentRuntimeSettings,
+)
 from knowledge_assistant.retrieval.repository import SQLiteKnowledgeRepository
 
 
@@ -45,8 +50,12 @@ class LangGraphQuestionProcessor:
             "evidence": [],
             "retrieval_round_count": 0,
             "tool_call_count": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
+            "evidence_sufficient": False,
+            "insufficiency_reason": "",
+            "draft_answer": "",
+            "final_answer": "",
+            "grounding_valid": False,
+            "grounding_issues": [],
             "repair_attempted": False,
         }
         usage_callback = UsageMetadataCallbackHandler()
@@ -61,12 +70,12 @@ class LangGraphQuestionProcessor:
                     "metadata": {
                         "agent_run_id": agent_run_id,
                         "conversation_id": conversation_id,
-                        "prompt_version": self._settings.prompt_version,
-                        "retrieval_version": self._settings.retrieval_version,
+                        "prompt_version": PROMPT_VERSION,
+                        "retrieval_version": RETRIEVAL_VERSION,
                         "model": self._profile.model_name,
                         "agent_profile": self._profile.name,
                         "environment": self._settings.app_env,
-                        "application_version": self._settings.app_version,
+                        "application_version": APPLICATION_VERSION,
                     },
                 },
             ),
@@ -78,7 +87,7 @@ class LangGraphQuestionProcessor:
             int(usage.get("output_tokens", 0)) for usage in usage_callback.usage_metadata.values()
         )
         evidence = result.get("evidence", [])
-        cited_ids = set(re.findall(r"\[([^\]\s]+)\]", str(result["final_answer"])))
+        cited_ids = cited_artifact_ids(str(result["final_answer"]))
         sources = [
             EvidenceReference(
                 artifact_id=str(item["artifact_id"]),
@@ -89,7 +98,11 @@ class LangGraphQuestionProcessor:
             for item in evidence
             if str(item["artifact_id"]) in cited_ids
         ]
-        insufficient = not bool(evidence) or not result.get("evidence_sufficient", False)
+        insufficient = (
+            not bool(evidence)
+            or not result.get("evidence_sufficient", False)
+            or not result.get("grounding_valid", False)
+        )
         return AgentResponse(
             answer=str(result["final_answer"]),
             sources=sources,

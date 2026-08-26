@@ -1,5 +1,4 @@
 from knowledge_assistant.execution.models import QuestionJob
-from knowledge_assistant.persistence.repositories import statuses_are_terminal
 
 
 def test_conversation_id_is_stable_per_root_thread() -> None:
@@ -14,8 +13,3 @@ def test_conversation_id_is_stable_per_root_thread() -> None:
     )
 
     assert job.conversation_id == "T1:C1:1.0"
-
-
-def test_terminal_status_detection() -> None:
-    assert statuses_are_terminal(["succeeded", "failed", "cancelled"])
-    assert not statuses_are_terminal(["running"])

@@ -14,7 +14,6 @@ MAX_ACCOUNT_RESULTS = 16
 
 class SearchFilters(BaseModel):
     artifact_type: str | None = Field(default=None, min_length=1, max_length=128)
-    customer: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class SearchKnowledgeInput(BaseModel):
