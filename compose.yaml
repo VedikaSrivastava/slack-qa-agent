@@ -43,7 +43,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - alembic upgrade head && python -m slack_qa_agent.persistence.checkpoints
+      - alembic upgrade head && python -m knowledge_assistant.persistence.checkpoints
     depends_on:
       postgres:
         condition: service_healthy

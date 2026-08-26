@@ -7,7 +7,7 @@ install:
 	uv sync --all-groups
 
 run:
-	uv run uvicorn slack_qa_agent.main:app --reload --port 8000
+	uv run uvicorn knowledge_assistant.main:app --reload --port 8000
 
 up:
 	docker compose --env-file .env.local up --build
@@ -22,7 +22,7 @@ logs:
 	docker compose --env-file .env.local logs --follow app inngest postgres
 
 test:
-	uv run pytest --cov=slack_qa_agent --cov-report=term-missing
+	uv run pytest --cov=knowledge_assistant --cov-report=term-missing
 
 lint:
 	uv run ruff check .
@@ -45,19 +45,19 @@ migrate:
 	docker compose --env-file .env.local run --rm migrate
 
 eval-smoke:
-	docker compose --env-file .env.local run --rm app python -m slack_qa_agent.evals run --suite smoke --profile $(PROFILE) --output /app/evals/results/smoke-$(PROFILE).json
+	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals run --suite smoke --profile $(PROFILE) --output /app/evals/results/smoke-$(PROFILE).json
 
 eval-full:
-	docker compose --env-file .env.local run --rm app python -m slack_qa_agent.evals run --suite full --profile $(PROFILE) --output /app/evals/results/full-$(PROFILE).json
+	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals run --suite full --profile $(PROFILE) --output /app/evals/results/full-$(PROFILE).json
 
 eval-sync:
-	docker compose --env-file .env.local run --rm app python -m slack_qa_agent.evals sync
+	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals sync
 
 eval-experiment:
-	docker compose --env-file .env.local run --rm app python -m slack_qa_agent.evals experiment --profile $(PROFILE) --protocol $(PROTOCOL) --output /app/evals/results/langsmith-$(PROFILE)-$(PROTOCOL).json
+	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals experiment --profile $(PROFILE) --protocol $(PROTOCOL) --output /app/evals/results/langsmith-$(PROFILE)-$(PROTOCOL).json
 
 eval-augment:
-	docker compose --env-file .env.local run --rm app python -m slack_qa_agent.evals augment --per-case 2
+	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals augment --per-case 2
 
 ask:
-	docker compose --env-file .env.local run --rm app python -m slack_qa_agent.cli ask "$(Q)"
+	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.cli ask "$(Q)"

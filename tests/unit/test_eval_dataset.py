@@ -1,30 +1,32 @@
 import pytest
 
-from slack_qa_agent.agent.models import AgentResponse, EvidenceReference
-from slack_qa_agent.agent.profiles import (
+from knowledge_assistant.agent.models import AgentResponse, EvidenceReference
+from knowledge_assistant.agent.profiles import (
     EXPERIMENT_PROFILES,
     PRODUCTION_PROFILE,
     get_experiment_profile,
 )
-from slack_qa_agent.evals.augmentation import (
+from knowledge_assistant.evals.augmentation import (
     AUGMENTATION_DATASET_NAME,
     CandidateQuestion,
     build_candidate_case,
 )
-from slack_qa_agent.evals.evaluators import evaluate_response
-from slack_qa_agent.evals.langsmith_integration import (
+from knowledge_assistant.evals.evaluators import evaluate_response
+from knowledge_assistant.evals.langsmith_dataset import (
     DATASET_NAME,
     DATASET_VERSION_TAG,
-    action_budget_pass,
     dataset_digest,
+)
+from knowledge_assistant.evals.langsmith_evaluators import (
+    action_budget_pass,
     source_recall,
 )
-from slack_qa_agent.evals.protocols import (
+from knowledge_assistant.evals.protocols import (
     CONFIRMATION_PROTOCOL,
     SCREENING_PROTOCOL,
     get_experiment_protocol,
 )
-from slack_qa_agent.evals.runner import load_cases
+from knowledge_assistant.evals.runner import load_cases
 
 
 def test_full_suite_is_the_immutable_seven_case_official_benchmark() -> None:

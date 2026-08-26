@@ -1,12 +1,12 @@
 import sqlite3
 from pathlib import Path
 
-from slack_qa_agent.retrieval.models import (
+from knowledge_assistant.retrieval.models import (
     AccountLookupInput,
     ReadArtifactsInput,
     SearchKnowledgeInput,
 )
-from slack_qa_agent.retrieval.repository import SQLiteKnowledgeRepository
+from knowledge_assistant.retrieval.repository import SQLiteKnowledgeRepository
 
 
 def _database(path: Path) -> None:

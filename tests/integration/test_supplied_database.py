@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from slack_qa_agent.retrieval.models import AccountLookupInput, SearchKnowledgeInput
-from slack_qa_agent.retrieval.repository import SQLiteKnowledgeRepository
+from knowledge_assistant.retrieval.models import AccountLookupInput, SearchKnowledgeInput
+from knowledge_assistant.retrieval.repository import SQLiteKnowledgeRepository
 
 DATABASE_PATH = Path("data/synthetic_startup.sqlite")
 pytestmark = pytest.mark.integration

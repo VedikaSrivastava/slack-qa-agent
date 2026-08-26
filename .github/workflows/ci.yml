@@ -48,6 +48,6 @@ jobs:
       - name: Migration smoke test
         run: |
           uv run alembic upgrade head
-          uv run python -m slack_qa_agent.persistence.checkpoints
+          uv run python -m knowledge_assistant.persistence.checkpoints
       - name: Test
-        run: uv run pytest --cov=slack_qa_agent --cov-report=term-missing
+        run: uv run pytest --cov=knowledge_assistant --cov-report=term-missing

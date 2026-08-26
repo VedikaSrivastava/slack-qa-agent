@@ -82,7 +82,7 @@ checkpoint tables.
 
 ```bash
 docker compose --env-file .env.local run --rm app \
-  python -m slack_qa_agent.cli ask \
+  python -m knowledge_assistant.cli ask \
   "For Verdant Bay, what is the approved live patch window?"
 ```
 
@@ -103,7 +103,7 @@ Run the one-case smoke suite and save its local result:
 
 ```bash
 docker compose --env-file .env.local run --rm app \
-  python -m slack_qa_agent.evals run \
+  python -m knowledge_assistant.evals run \
   --suite smoke \
   --profile balanced-gpt-4.1-mini \
   --output /app/evals/results/smoke-balanced-gpt-4.1-mini.json
@@ -112,9 +112,9 @@ docker compose --env-file .env.local run --rm app \
 Synchronize the versioned official dataset, then run and save a LangSmith experiment:
 
 ```bash
-docker compose --env-file .env.local run --rm app python -m slack_qa_agent.evals sync
+docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals sync
 docker compose --env-file .env.local run --rm app \
-  python -m slack_qa_agent.evals experiment \
+  python -m knowledge_assistant.evals experiment \
   --profile balanced-gpt-4.1-mini \
   --protocol screening \
   --output /app/evals/results/langsmith-balanced-gpt-4.1-mini-screening.json
@@ -142,7 +142,7 @@ Generate two bounded candidates per official seed (14 total) with the code-defin
 
 ```bash
 docker compose --env-file .env.local run --rm app \
-  python -m slack_qa_agent.evals augment --per-case 2
+  python -m knowledge_assistant.evals augment --per-case 2
 ```
 
 This command writes only to `slack-qa-agent-augmentation-candidates`, tags every example as

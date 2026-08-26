@@ -1,5 +1,5 @@
-from slack_qa_agent.execution.models import QuestionJob
-from slack_qa_agent.persistence.repositories import statuses_are_terminal
+from knowledge_assistant.execution.models import QuestionJob
+from knowledge_assistant.persistence.repositories import statuses_are_terminal
 
 
 def test_conversation_id_is_stable_per_root_thread() -> None:

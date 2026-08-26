@@ -1,4 +1,4 @@
-from slack_qa_agent.integrations.slack.parsing import parse_app_mention, strip_bot_mentions
+from knowledge_assistant.integrations.slack.parsing import parse_app_mention, strip_bot_mentions
 
 
 def test_strip_bot_mentions_normalizes_whitespace() -> None:

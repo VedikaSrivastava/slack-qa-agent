@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from slack_qa_agent.retrieval.models import (
+from knowledge_assistant.retrieval.models import (
     AccountLookupInput,
     ReadArtifactsInput,
     SearchKnowledgeInput,

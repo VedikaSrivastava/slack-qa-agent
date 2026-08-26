@@ -7,8 +7,8 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from slack_qa_agent.config import get_database_settings
-from slack_qa_agent.persistence.models import Base
+from knowledge_assistant.config import get_database_settings
+from knowledge_assistant.persistence.models import Base
 
 config = context.config
 if config.config_file_name is not None:

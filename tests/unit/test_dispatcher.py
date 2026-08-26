@@ -2,8 +2,8 @@ from typing import Any
 
 import inngest
 
-from slack_qa_agent.execution.dispatcher import InngestQuestionDispatcher
-from slack_qa_agent.execution.models import QuestionJob
+from knowledge_assistant.execution.dispatcher import InngestQuestionDispatcher
+from knowledge_assistant.execution.models import QuestionJob
 
 
 class FakeInngest:

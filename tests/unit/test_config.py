@@ -3,17 +3,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from slack_qa_agent.config import ExperimentSettings, Settings
+from knowledge_assistant.config import EvaluationSettings, SlackApplicationSettings
 
 
 def test_required_runtime_configuration_fails_fast() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+        SlackApplicationSettings(_env_file=None)
 
 
 def test_blank_secret_values_fail_fast() -> None:
     with pytest.raises(ValidationError):
-        Settings(
+        SlackApplicationSettings(
             _env_file=None,
             openai_api_key="",
             slack_bot_token="",
@@ -25,7 +25,7 @@ def test_blank_secret_values_fail_fast() -> None:
 
 def test_database_url_requires_asyncpg_scheme() -> None:
     with pytest.raises(ValidationError, match="postgresql\\+asyncpg"):
-        Settings(
+        SlackApplicationSettings(
             _env_file=None,
             openai_api_key="test-key",
             slack_bot_token="xoxb-test",
@@ -37,7 +37,7 @@ def test_database_url_requires_asyncpg_scheme() -> None:
 
 def test_production_requires_inngest_credentials() -> None:
     with pytest.raises(ValidationError, match="INNGEST_DEV"):
-        Settings(
+        SlackApplicationSettings(
             _env_file=None,
             app_env="production",
             openai_api_key="test-key",
@@ -52,7 +52,7 @@ def test_production_requires_inngest_credentials() -> None:
 
 
 def test_experiment_configuration_is_independent_from_slack() -> None:
-    settings = ExperimentSettings(
+    settings = EvaluationSettings(
         _env_file=None,
         app_env="test",
         openai_api_key="test-key",

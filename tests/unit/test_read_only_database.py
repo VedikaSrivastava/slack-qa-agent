@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from slack_qa_agent.retrieval.database import open_read_only_database
+from knowledge_assistant.retrieval.database import open_read_only_database
 
 
 def test_knowledge_database_rejects_writes(tmp_path: Path) -> None:

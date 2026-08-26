@@ -1,4 +1,4 @@
-from slack_qa_agent.agent.prompts import GENERATE_ANSWER, SYSTEM_GROUNDING_RULES
+from knowledge_assistant.agent.prompts import GENERATE_ANSWER, SYSTEM_GROUNDING_RULES
 
 
 def test_grounding_prompt_treats_retrieved_instructions_as_data() -> None:

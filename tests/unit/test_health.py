@@ -3,12 +3,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from slack_qa_agent.api.app import create_app
-from slack_qa_agent.config import Settings
+from knowledge_assistant.api.app import create_app
+from knowledge_assistant.config import SlackApplicationSettings
 
 
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(
+def _settings(tmp_path: Path) -> SlackApplicationSettings:
+    return SlackApplicationSettings(
         _env_file=None,
         app_env="test",
         openai_api_key="test-key",

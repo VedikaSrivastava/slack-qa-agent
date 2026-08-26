@@ -1,6 +1,6 @@
-from slack_qa_agent.agent.models import AgentResponse, EvidenceReference
-from slack_qa_agent.evals.evaluators import evaluate_response
-from slack_qa_agent.evals.models import EvalCase
+from knowledge_assistant.agent.models import AgentResponse, EvidenceReference
+from knowledge_assistant.evals.evaluators import evaluate_response
+from knowledge_assistant.evals.models import EvalCase
 
 
 def test_exact_evaluator_checks_facts_sources_and_budgets() -> None:

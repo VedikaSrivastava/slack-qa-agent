@@ -1,9 +1,9 @@
 from typing import Any
 from uuid import UUID, uuid4
 
-from slack_qa_agent.agent.models import AgentResponse, EvidenceReference
-from slack_qa_agent.integrations.slack.publisher import SlackPublisher
-from slack_qa_agent.persistence.repositories import DeliveryState
+from knowledge_assistant.agent.models import AgentResponse, EvidenceReference
+from knowledge_assistant.integrations.slack.publisher import SlackPublisher
+from knowledge_assistant.persistence.repositories import DeliveryState
 
 
 class FakeLedger:
