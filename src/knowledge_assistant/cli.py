@@ -9,11 +9,11 @@ from collections.abc import Sequence
 
 from knowledge_assistant.agent.processor import create_question_processor
 from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE
-from knowledge_assistant.config import get_slack_application_settings
+from knowledge_assistant.config import get_agent_runtime_settings
 
 
 async def ask(question: str, conversation_id: str | None = None) -> int:
-    settings = get_slack_application_settings()
+    settings = get_agent_runtime_settings()
     run_id = str(uuid.uuid4())
     thread_id = conversation_id or f"cli:{run_id}"
     async with create_question_processor(settings, PRODUCTION_PROFILE) as processor:

@@ -7,8 +7,9 @@ from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from knowledge_assistant.agent.citations import citation_issues
 from knowledge_assistant.agent.profiles import AgentProfile
 from knowledge_assistant.agent.prompts import (
     GENERATE_ANSWER,
@@ -22,6 +23,7 @@ from knowledge_assistant.agent.prompts import (
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState, ConversationTurn
 from knowledge_assistant.retrieval.models import (
+    MAX_ARTIFACT_BATCH,
     MAX_CONTEXT_CHARS,
     AccountLookupInput,
     EvidenceItem,
@@ -37,21 +39,57 @@ MAX_REFINED_QUERIES = 2
 class StandaloneQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=8_000)
 
+    @field_validator("question")
+    @classmethod
+    def require_question_text(cls, question: str) -> str:
+        normalized = " ".join(question.split())
+        if not normalized:
+            raise ValueError("standalone question must contain text")
+        return normalized
+
 
 class RetrievalPlan(BaseModel):
     queries: list[str] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
     account_lookup: AccountLookupInput | None = None
 
+    @field_validator("queries")
+    @classmethod
+    def require_searchable_queries(cls, queries: list[str]) -> list[str]:
+        normalized = [" ".join(query.split()) for query in queries]
+        if any(not query for query in normalized):
+            raise ValueError("retrieval queries must contain searchable text")
+        return list(dict.fromkeys(normalized))
+
 
 class EvidenceGrade(BaseModel):
     sufficient: bool
-    reason: str = Field(max_length=1_000)
+    reason: str = Field(min_length=1, max_length=1_000)
     refined_queries: list[str] = Field(default_factory=list, max_length=MAX_REFINED_QUERIES)
+
+    @field_validator("refined_queries")
+    @classmethod
+    def normalize_refined_queries(cls, queries: list[str]) -> list[str]:
+        normalized = [" ".join(query.split()) for query in queries]
+        if any(not query for query in normalized):
+            raise ValueError("refined queries must contain searchable text")
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def require_queries_when_insufficient(self) -> EvidenceGrade:
+        if not self.sufficient and not self.refined_queries:
+            raise ValueError("insufficient evidence requires at least one refined query")
+        return self
 
 
 class GroundingVerdict(BaseModel):
     valid: bool
     issues: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def require_issues_when_invalid(self) -> GroundingVerdict:
+        if not self.valid and not self.issues:
+            raise ValueError("invalid grounding verdict requires at least one issue")
+        return self
 
 
 def _evidence_payload(state: AgentState) -> str:
@@ -64,6 +102,34 @@ def _rank_unique_artifact_ids(hits: list[SearchHit], limit: int) -> list[str]:
         if hit.artifact_id not in ranked_ids:
             ranked_ids.append(hit.artifact_id)
     return ranked_ids[:limit]
+
+
+def _merge_evidence(
+    existing_evidence: list[EvidenceItem],
+    new_evidence: list[EvidenceItem],
+    *,
+    max_artifacts: int,
+) -> list[EvidenceItem]:
+    """Merge evidence in discovery order while enforcing global workflow budgets."""
+
+    merged_evidence: list[EvidenceItem] = []
+    seen_artifact_ids: set[str] = set()
+    remaining_context_chars = MAX_CONTEXT_CHARS
+    for item in (*existing_evidence, *new_evidence):
+        if item.artifact_id in seen_artifact_ids:
+            continue
+        if len(merged_evidence) >= max_artifacts or remaining_context_chars <= 0:
+            break
+
+        bounded_item = item
+        if len(item.content) > remaining_context_chars:
+            bounded_item = item.model_copy(
+                update={"content": item.content[:remaining_context_chars]}
+            )
+        merged_evidence.append(bounded_item)
+        seen_artifact_ids.add(item.artifact_id)
+        remaining_context_chars -= len(bounded_item.content)
+    return merged_evidence
 
 
 class GroundedAnswerNodes:
@@ -107,9 +173,8 @@ class GroundedAnswerNodes:
             ]
         )
         parsed = cast(RetrievalPlan, result)
-        queries = [" ".join(query.split()) for query in parsed.queries if query.strip()]
         return {
-            "search_queries": list(dict.fromkeys(queries))[: self._profile.max_initial_queries],
+            "search_queries": parsed.queries[: self._profile.max_initial_queries],
             "account_lookup": parsed.account_lookup.model_dump(mode="json")
             if parsed.account_lookup
             else None,
@@ -123,6 +188,14 @@ class GroundedAnswerNodes:
             remaining_tool_calls,
         )
         remaining_tool_calls -= account_lookup_calls
+        previous_evidence = [
+            EvidenceItem.model_validate(item) for item in state.get("evidence", [])
+        ]
+        evidence_before_lexical_read = _merge_evidence(
+            previous_evidence,
+            account_evidence,
+            max_artifacts=self._profile.max_artifacts,
+        )
 
         search_query_cap = (
             self._profile.max_initial_queries
@@ -138,7 +211,7 @@ class GroundedAnswerNodes:
             self._profile.max_artifacts,
         )
         evidence, artifact_read_calls = await self._read_unseen_artifacts(
-            account_evidence,
+            evidence_before_lexical_read,
             ranked_artifact_ids,
             can_read=remaining_tool_calls > len(search_queries),
         )
@@ -192,26 +265,26 @@ class GroundedAnswerNodes:
             artifact_id
             for artifact_id in ranked_artifact_ids
             if artifact_id not in existing_artifact_ids
-        ]
+        ][: min(MAX_ARTIFACT_BATCH, max(0, self._profile.max_artifacts - len(evidence)))]
         remaining_context_chars = MAX_CONTEXT_CHARS - sum(len(item.content) for item in evidence)
         if not unread_artifact_ids or remaining_context_chars < 1_000 or not can_read:
             return evidence, 0
-        evidence.extend(
-            await self._tools.read_artifacts(
-                ReadArtifactsInput(
-                    artifact_ids=unread_artifact_ids,
-                    max_context_chars=remaining_context_chars,
-                )
+        newly_read_evidence = await self._tools.read_artifacts(
+            ReadArtifactsInput(
+                artifact_ids=unread_artifact_ids,
+                max_context_chars=remaining_context_chars,
             )
         )
-        return evidence, 1
+        return (
+            _merge_evidence(
+                evidence,
+                newly_read_evidence,
+                max_artifacts=self._profile.max_artifacts,
+            ),
+            1,
+        )
 
     async def grade_evidence(self, state: AgentState) -> dict[str, Any]:
-        if not state.get("evidence"):
-            return {
-                "evidence_sufficient": False,
-                "insufficiency_reason": "No relevant artifacts were retrieved.",
-            }
         grader = self._model.with_structured_output(EvidenceGrade)
         result = await grader.ainvoke(
             [
@@ -261,6 +334,11 @@ class GroundedAnswerNodes:
     async def verify_grounding(self, state: AgentState) -> dict[str, Any]:
         if not state.get("evidence"):
             return {"grounding_valid": True, "grounding_issues": []}
+        evidence = [EvidenceItem.model_validate(item) for item in state["evidence"]]
+        deterministic_issues = citation_issues(state["draft_answer"], evidence)
+        if deterministic_issues:
+            return {"grounding_valid": False, "grounding_issues": deterministic_issues}
+
         verifier = self._model.with_structured_output(GroundingVerdict)
         result = await verifier.ainvoke(
             [
@@ -293,7 +371,15 @@ class GroundedAnswerNodes:
                 ),
             ]
         )
-        return {"final_answer": str(response.content), "repair_attempted": True}
+        return {"draft_answer": str(response.content), "repair_attempted": True}
+
+    async def reject_ungrounded_answer(self, state: AgentState) -> dict[str, Any]:
+        del state
+        return {
+            "final_answer": (
+                "I couldn't produce an answer that was fully supported by the knowledge base."
+            )
+        }
 
     async def finalize(self, state: AgentState) -> dict[str, Any]:
         answer = state.get("final_answer") or state["draft_answer"]

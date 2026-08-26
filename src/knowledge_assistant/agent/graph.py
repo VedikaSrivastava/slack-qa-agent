@@ -20,6 +20,8 @@ def build_graph(nodes: GroundedAnswerNodes, *, checkpointer: Any = None) -> Any:
     builder.add_node("generate_answer", cast(Any, nodes.generate_answer))
     builder.add_node("verify_grounding", cast(Any, nodes.verify_grounding))
     builder.add_node("repair_answer", cast(Any, nodes.repair_answer))
+    builder.add_node("verify_repair", cast(Any, nodes.verify_grounding))
+    builder.add_node("reject_ungrounded_answer", cast(Any, nodes.reject_ungrounded_answer))
     builder.add_node("finalize", cast(Any, nodes.finalize))
 
     builder.add_edge(START, "resolve_question")
@@ -38,6 +40,12 @@ def build_graph(nodes: GroundedAnswerNodes, *, checkpointer: Any = None) -> Any:
         nodes.route_after_verify,
         {"finalize": "finalize", "repair": "repair_answer"},
     )
-    builder.add_edge("repair_answer", "finalize")
+    builder.add_edge("repair_answer", "verify_repair")
+    builder.add_conditional_edges(
+        "verify_repair",
+        nodes.route_after_verify,
+        {"finalize": "finalize", "repair": "reject_ungrounded_answer"},
+    )
+    builder.add_edge("reject_ungrounded_answer", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile(checkpointer=checkpointer)

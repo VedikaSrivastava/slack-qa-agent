@@ -29,7 +29,7 @@ BALANCED_GPT_4_1_MINI = AgentProfile(
     max_initial_queries=3,
     max_refined_queries=2,
     search_limit=5,
-    max_artifacts=8,
+    max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
 )
@@ -41,7 +41,7 @@ BALANCED_GPT_5_MINI = AgentProfile(
     max_initial_queries=3,
     max_refined_queries=2,
     search_limit=5,
-    max_artifacts=8,
+    max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
 )
@@ -53,7 +53,7 @@ BALANCED_GPT_5_6_LUNA = AgentProfile(
     max_initial_queries=3,
     max_refined_queries=2,
     search_limit=5,
-    max_artifacts=8,
+    max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
 )
@@ -77,7 +77,7 @@ WIDE_GPT_4_1_MINI = AgentProfile(
     max_initial_queries=3,
     max_refined_queries=2,
     search_limit=8,
-    max_artifacts=8,
+    max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
 )

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -74,7 +73,6 @@ class AgentRun(Base):
     retrieval_round_count: Mapped[int | None] = mapped_column(Integer)
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
-    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     insufficient_evidence: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -83,9 +81,6 @@ class AgentRun(Base):
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     sources: Mapped[list[RunSource]] = relationship(
-        back_populates="agent_run", cascade="all, delete-orphan"
-    )
-    feedback_entries: Mapped[list[Feedback]] = relationship(
         back_populates="agent_run", cascade="all, delete-orphan"
     )
 
@@ -110,23 +105,3 @@ class RunSource(Base):
     )
 
     agent_run: Mapped[AgentRun] = relationship(back_populates="sources")
-
-
-class Feedback(Base):
-    __tablename__ = "feedback"
-    __table_args__ = (
-        CheckConstraint("rating IN (-1, 1)", name="ck_feedback_rating"),
-        Index("ix_feedback_agent_run_id", "agent_run_id"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    agent_run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
-    )
-    rating: Mapped[int] = mapped_column(Integer, nullable=False)
-    comment: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    agent_run: Mapped[AgentRun] = relationship(back_populates="feedback_entries")

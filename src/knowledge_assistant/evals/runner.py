@@ -19,7 +19,7 @@ from knowledge_assistant.agent.profiles import (
     AgentProfile,
     get_experiment_profile,
 )
-from knowledge_assistant.config import EvaluationSettings
+from knowledge_assistant.config import AgentRuntimeSettings, EvaluationSettings
 from knowledge_assistant.evals.augmentation import generate_augmentation_candidates
 from knowledge_assistant.evals.evaluators import evaluate_response
 from knowledge_assistant.evals.langsmith_dataset import sync_official_dataset
@@ -35,9 +35,18 @@ def load_cases(suite: str) -> list[EvalCase]:
     return TypeAdapter(list[EvalCase]).validate_json(path.read_text(encoding="utf-8"))
 
 
-def load_settings(env_file: Path | None) -> EvaluationSettings:
+def _validate_env_file(env_file: Path | None) -> None:
     if env_file is not None and not env_file.is_file():
         raise FileNotFoundError(f"Environment file does not exist: {env_file}")
+
+
+def load_agent_settings(env_file: Path | None) -> AgentRuntimeSettings:
+    _validate_env_file(env_file)
+    return AgentRuntimeSettings(_env_file=env_file)
+
+
+def load_evaluation_settings(env_file: Path | None) -> EvaluationSettings:
+    _validate_env_file(env_file)
     return EvaluationSettings(_env_file=env_file)
 
 
@@ -46,7 +55,7 @@ def create_langsmith_client(settings: EvaluationSettings) -> Client:
 
 
 async def run_suite(
-    settings: EvaluationSettings, suite: str, profile: AgentProfile
+    settings: AgentRuntimeSettings, suite: str, profile: AgentProfile
 ) -> list[EvalResult]:
     cases = load_cases(suite)
     results: list[EvalResult] = []
@@ -112,14 +121,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def async_main(args: argparse.Namespace) -> int:
-    settings = load_settings(args.env_file)
     if args.command == "run":
+        settings = load_agent_settings(args.env_file)
         profile = get_experiment_profile(args.profile)
         results = await run_suite(settings, args.suite, profile)
         write_local_results(args.output, suite=args.suite, profile=profile, results=results)
         print(json.dumps([result.model_dump(mode="json") for result in results], indent=2))
         return 0 if all(result.passed for result in results) else 1
 
+    settings = load_evaluation_settings(args.env_file)
     client = create_langsmith_client(settings)
     cases = load_cases("full")
     if args.command == "sync":

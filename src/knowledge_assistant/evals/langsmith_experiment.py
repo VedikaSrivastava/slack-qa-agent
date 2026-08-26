@@ -14,7 +14,7 @@ from langsmith import Client, aevaluate, tracing_context
 
 from knowledge_assistant.agent.processor import create_question_processor
 from knowledge_assistant.agent.profiles import EVALUATOR_MODEL_NAME, AgentProfile
-from knowledge_assistant.config import EvaluationSettings
+from knowledge_assistant.config import LANGSMITH_PROJECT_NAME, EvaluationSettings
 from knowledge_assistant.evals.langsmith_dataset import (
     DATASET_NAME,
     DATASET_VERSION_TAG,
@@ -42,6 +42,16 @@ def _project_statistics(project: Any) -> dict[str, Any]:
         "error_rate": project.error_rate,
         "feedback_stats": project.feedback_stats,
     }
+
+
+def require_error_free_experiment(project: Any, experiment_name: str) -> None:
+    """Turn logged per-example execution errors into a failing experiment command."""
+
+    if project.error_rate:
+        raise RuntimeError(
+            f"LangSmith experiment {experiment_name!r} completed with "
+            f"error_rate={project.error_rate}"
+        )
 
 
 async def _write_experiment_summary(output_path: Path, summary: dict[str, Any]) -> None:
@@ -86,7 +96,7 @@ async def run_official_benchmark(
             return {"response": response.model_dump(mode="json")}
 
         with tracing_context(
-            project_name=settings.langsmith_project,
+            project_name=LANGSMITH_PROJECT_NAME,
             enabled=True,
             client=client,
             tags=["offline-eval", DATASET_VERSION_TAG, profile.name, protocol.name],
@@ -127,6 +137,7 @@ async def run_official_benchmark(
             await results.wait()
 
     project = client.read_project(project_name=results.experiment_name, include_stats=True)
+    require_error_free_experiment(project, results.experiment_name)
     summary = {
         **dataset,
         "experiment_id": str(results.experiment_id),

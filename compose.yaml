@@ -1,18 +1,18 @@
 name: slack-qa-agent
 
+x-database-environment: &database-environment
+  DATABASE_URL: postgresql+asyncpg://slack_qa:slack_qa_local_dev@postgres:5432/slack_qa
+
 x-app-environment: &app-environment
+  <<: *database-environment
   APP_ENV: development
   LOG_LEVEL: INFO
-  APP_VERSION: dev
-  PROMPT_VERSION: v1
-  RETRIEVAL_VERSION: v1
   OPENAI_API_KEY: ${OPENAI_API_KEY}
-  LANGSMITH_TRACING: "true"
-  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+  LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
   LANGSMITH_PROJECT: slack-qa-agent
   SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
   SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
-  DATABASE_URL: ${DATABASE_URL}
   KNOWLEDGE_DB_PATH: /app/data/synthetic_startup.sqlite
   INNGEST_DEV: "1"
   INNGEST_BASE_URL: http://inngest:8288
@@ -23,7 +23,7 @@ services:
     environment:
       POSTGRES_DB: slack_qa
       POSTGRES_USER: slack_qa
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_PASSWORD: slack_qa_local_dev
     ports:
       - "5432:5432"
     volumes:
@@ -39,7 +39,7 @@ services:
     build:
       context: .
       target: runtime
-    environment: *app-environment
+    environment: *database-environment
     command:
       - /bin/sh
       - -c

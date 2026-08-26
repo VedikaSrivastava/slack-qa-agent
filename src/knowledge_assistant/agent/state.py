@@ -21,8 +21,6 @@ class AgentState(TypedDict, total=False):
     history: list[ConversationTurn]
     retrieval_round_count: int
     tool_call_count: int
-    input_tokens: int
-    output_tokens: int
     evidence_sufficient: bool
     insufficiency_reason: str
     draft_answer: str
