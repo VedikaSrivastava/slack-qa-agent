@@ -71,7 +71,7 @@ def test_search_input_is_parameterized(tmp_path: Path) -> None:
 
     repository.search(SearchKnowledgeInput(query='" OR 1=1 --', limit=3))
 
-    assert repository.inspect_schema().artifact_table == "artifacts"
+    assert repository.validate_runtime_schema().artifact_table == "artifacts"
 
 
 def test_missing_fts_schema_fails_instead_of_falling_back(tmp_path: Path) -> None:
@@ -117,10 +117,14 @@ def test_structured_account_lookup_uses_allowlisted_relational_filters(tmp_path:
         INSERT INTO artifacts VALUES
             ('a1', 's1', 'support_ticket', 'Search issue', '2026-01-01', 'Search summary',
              'Search evidence', '{}'),
+            ('a3', 's1', 'runbook', 'Older search runbook', '2025-12-01', 'Runbook summary',
+             'Less representative search evidence', '{}'),
             ('a2', 's2', 'support_ticket', 'Dedupe issue', '2026-01-01', 'Dedupe summary',
              'Dedupe evidence', '{}');
         INSERT INTO artifacts_fts VALUES
             ('a1', 'Search issue', 'Search summary', 'Search evidence'),
+            ('a3', 'Older search runbook', 'Runbook summary',
+             'Less representative search evidence'),
             ('a2', 'Dedupe issue', 'Dedupe summary', 'Dedupe evidence');
         """
     )
@@ -135,3 +139,25 @@ def test_structured_account_lookup_uses_allowlisted_relational_filters(tmp_path:
     assert [item.artifact_id for item in evidence] == ["a2", "a1"]
     assert '"customer":"Search Corp"' in evidence[1].content
     assert '"pain_point":"workflow deduplication drift during handoffs"' in evidence[0].content
+
+    limited_evidence = repository.lookup_accounts(
+        AccountLookupInput(region="North America West", product="Event Nexus", limit=1)
+    )
+    assert [item.artifact_id for item in limited_evidence] == ["a2"]
+
+    broad_region_evidence = repository.lookup_accounts(
+        AccountLookupInput(
+            region="North America",
+            pain_point_terms=["search pattern"],
+        )
+    )
+    assert [item.artifact_id for item in broad_region_evidence] == ["a1"]
+
+    country_over_region_evidence = repository.lookup_accounts(
+        AccountLookupInput(
+            region="Model-inferred parent region",
+            country="UNITED STATES",
+            pain_point_terms=["search-relevance"],
+        )
+    )
+    assert [item.artifact_id for item in country_over_region_evidence] == ["a1"]

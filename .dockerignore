@@ -10,7 +10,8 @@
 .ruff_cache
 __pycache__
 *.pyc
-data/*.sqlite
-data/*.sqlite-*
+data/*
+!data/README.md
+!data/synthetic_startup.sqlite
 evals/reports
 DESIGN.md

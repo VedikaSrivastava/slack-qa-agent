@@ -11,6 +11,10 @@ from knowledge_assistant.agent.workflow_nodes import GroundedAnswerNodes
 
 
 def build_graph(nodes: GroundedAnswerNodes, *, checkpointer: Any = None) -> Any:
+    """Compile the bounded graph, localizing gaps in LangGraph's generic node typing."""
+
+    # LangGraph's overloads do not express async bound methods that return partial TypedDict state;
+    # keep the third-party casts at this construction boundary instead of weakening every node.
     builder = StateGraph(AgentState)
     builder.add_node("resolve_question", cast(Any, nodes.resolve_question))
     builder.add_node("plan_retrieval", cast(Any, nodes.plan_retrieval))

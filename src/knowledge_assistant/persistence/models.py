@@ -70,6 +70,7 @@ class AgentRun(Base):
     agent_latency_ms: Mapped[int | None] = mapped_column(Integer)
     total_latency_ms: Mapped[int | None] = mapped_column(Integer)
     tool_call_count: Mapped[int | None] = mapped_column(Integer)
+    model_call_count: Mapped[int | None] = mapped_column(Integer)
     retrieval_round_count: Mapped[int | None] = mapped_column(Integer)
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)

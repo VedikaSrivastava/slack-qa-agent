@@ -6,16 +6,20 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+import anyio
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langsmith import Client, tracing_context
 from langsmith.schemas import Dataset
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from knowledge_assistant.config import LANGSMITH_PROJECT_NAME, EvaluationSettings
+from knowledge_assistant.agent.profiles import (
+    OPENAI_MAX_RETRIES,
+    OPENAI_REQUEST_TIMEOUT_SECONDS,
+)
+from knowledge_assistant.config import LANGSMITH_PROJECT_NAME, AugmentationSettings
 from knowledge_assistant.evals.langsmith_dataset import DATASET_NAME, dataset_digest
 from knowledge_assistant.evals.models import EvalCase
 
@@ -32,6 +36,21 @@ class CandidateQuestion(BaseModel):
 
 class CandidateBatch(BaseModel):
     candidates: list[CandidateQuestion] = Field(min_length=1, max_length=2)
+
+    @model_validator(mode="after")
+    def reject_duplicate_candidates(self) -> CandidateBatch:
+        # The transformation label is metadata; changing only that label does not make a
+        # generated question an independent robustness case.
+        input_keys = {
+            (
+                tuple(" ".join(turn.casefold().split()) for turn in candidate.prior_turns),
+                " ".join(candidate.question.casefold().split()),
+            )
+            for candidate in self.candidates
+        }
+        if len(input_keys) != len(self.candidates):
+            raise ValueError("augmentation candidates must be distinct")
+        return self
 
 
 @dataclass(frozen=True)
@@ -62,7 +81,7 @@ def build_candidate_case(seed: EvalCase, candidate: CandidateQuestion) -> EvalCa
 async def _generate_candidate_questions(
     *,
     client: Client,
-    settings: EvaluationSettings,
+    settings: AugmentationSettings,
     seeds: list[EvalCase],
     candidates_per_case: int,
 ) -> list[GeneratedCandidate]:
@@ -70,6 +89,8 @@ async def _generate_candidate_questions(
     generator = ChatOpenAI(
         api_key=settings.openai_api_key,
         model=AUGMENTATION_MODEL_NAME,
+        max_retries=OPENAI_MAX_RETRIES,
+        timeout=OPENAI_REQUEST_TIMEOUT_SECONDS,
     ).with_structured_output(CandidateBatch)
     generated_candidates: list[GeneratedCandidate] = []
     with tracing_context(
@@ -178,9 +199,10 @@ def _sync_candidate_dataset(
         )
 
     client.create_examples(dataset_id=dataset.id, examples=examples, max_concurrency=1)
+    latest_version = client.read_dataset_version(dataset_id=dataset.id, tag="latest")
     client.update_dataset_tag(
         dataset_id=dataset.id,
-        as_of=datetime.now(UTC),
+        as_of=latest_version.as_of,
         tag=AUGMENTATION_DATASET_VERSION,
     )
     return dataset
@@ -189,7 +211,7 @@ def _sync_candidate_dataset(
 async def generate_augmentation_candidates(
     *,
     client: Client,
-    settings: EvaluationSettings,
+    settings: AugmentationSettings,
     seeds: list[EvalCase],
     candidates_per_case: int,
 ) -> dict[str, object]:
@@ -205,7 +227,7 @@ async def generate_augmentation_candidates(
         candidates_per_case=candidates_per_case,
     )
     examples = _build_candidate_examples(generated_candidates, source_dataset_digest)
-    dataset = _sync_candidate_dataset(client, examples)
+    dataset = await anyio.to_thread.run_sync(_sync_candidate_dataset, client, examples)
     return {
         "dataset_id": str(dataset.id),
         "dataset_name": dataset.name,

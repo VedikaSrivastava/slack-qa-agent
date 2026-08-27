@@ -1,13 +1,10 @@
-.PHONY: install run up down reset logs test lint format format-check typecheck check inspect-db migrate eval-smoke eval-full eval-sync eval-experiment eval-augment ask
+.PHONY: install up down reset logs test lint format format-check typecheck check inspect-db migrate eval-smoke eval-full eval-sync eval-experiment eval-augment
 
 PROFILE ?= balanced-gpt-4.1-mini
 PROTOCOL ?= screening
 
 install:
-	uv sync --all-groups
-
-run:
-	uv run uvicorn knowledge_assistant.main:app --reload --port 8000
+	uv sync --frozen --all-groups
 
 up:
 	docker compose --env-file .env.local up --build
@@ -19,7 +16,7 @@ reset:
 	docker compose --env-file .env.local down --volumes
 
 logs:
-	docker compose --env-file .env.local logs --follow app inngest postgres
+	docker compose --env-file .env.local logs --follow app slack-ingress migrate inngest postgres
 
 test:
 	uv run pytest --cov=knowledge_assistant --cov-report=term-missing
@@ -28,7 +25,7 @@ lint:
 	uv run ruff check .
 
 format:
-	uv run ruff format .
+	uv run ruff format . --exclude DESIGN.md
 
 format-check:
 	uv run ruff format --check .
@@ -58,6 +55,3 @@ eval-experiment:
 
 eval-augment:
 	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals augment --per-case 2
-
-ask:
-	docker compose --env-file .env.local run --rm app python -m knowledge_assistant.cli ask "$(Q)"

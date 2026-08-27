@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -16,6 +17,7 @@ from knowledge_assistant.persistence.repositories import RunLedger
 
 logger = structlog.get_logger(__name__)
 SlackResponder = Callable[..., Awaitable[Any]]
+SLACK_DURABLE_HANDOFF_TIMEOUT_SECONDS = 2.0
 
 
 async def process_app_mention(
@@ -28,7 +30,7 @@ async def process_app_mention(
 ) -> None:
     """Validate one mention, persist it, and dispatch it for durable processing."""
 
-    if event.get("bot_id") or event.get("subtype") == "bot_message":
+    if event.get("bot_id") or event.get("subtype") is not None:
         return
     if not strip_bot_mentions(str(event.get("text", ""))):
         await respond(
@@ -46,12 +48,14 @@ async def process_app_mention(
             exception_class=type(exc).__name__,
         )
         return
-    run_id, created = await ledger.create_queued(job)
-    job = job.model_copy(update={"agent_run_id": run_id})
-    # Re-send duplicate deliveries with the same deterministic event ID. This recovers when the
-    # first request persisted the run but failed before Inngest acknowledged the event.
-    event_ids = await dispatcher.enqueue(job)
-    if event_ids:
+    # Bound the durable handoff below Slack's acknowledgement deadline. If any step times out,
+    # Slack retries the same event ID and the idempotent ledger/dispatcher resume safely.
+    async with asyncio.timeout(SLACK_DURABLE_HANDOFF_TIMEOUT_SECONDS):
+        run_id, is_new_run = await ledger.create_queued(job)
+        job = job.model_copy(update={"agent_run_id": run_id})
+        event_ids = await dispatcher.enqueue(job)
+        if not event_ids:
+            raise RuntimeError("Inngest returned no event ID for the Slack question")
         await ledger.attach_inngest_event(run_id, event_ids[0])
     logger.info(
         "slack_question_enqueued",
@@ -59,7 +63,7 @@ async def process_app_mention(
         slack_event_id=job.event_id,
         conversation_id=job.conversation_id,
         inngest_event_ids=event_ids,
-        new_run=created,
+        is_new_run=is_new_run,
     )
 
 
@@ -74,6 +78,8 @@ def create_slack_app(
         token=settings.slack_bot_token.get_secret_value(),
         signing_secret=settings.slack_signing_secret.get_secret_value(),
         raise_error_for_unhandled_request=True,
+        # Slack must not receive a 2xx acknowledgment until the durable Inngest handoff succeeds.
+        process_before_response=True,
     )
 
     @app.event("app_mention")

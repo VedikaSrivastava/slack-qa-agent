@@ -44,10 +44,13 @@ def create_app(settings: SlackApplicationSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with create_question_processor(settings, PRODUCTION_PROFILE) as processor:
-            app.state.question_processor = processor
-            yield
-        await engine.dispose()
+        try:
+            async with create_question_processor(settings, PRODUCTION_PROFILE) as processor:
+                app.state.question_processor = processor
+                yield
+        finally:
+            # Engine cleanup must also run when processor startup or shutdown fails.
+            await engine.dispose()
 
     app = FastAPI(title="Slack Q&A Agent", version=APPLICATION_VERSION, lifespan=lifespan)
     inngest_client = create_inngest_client(settings)
@@ -71,18 +74,18 @@ def create_app(settings: SlackApplicationSettings | None = None) -> FastAPI:
 
     @app.get("/readyz")
     async def readiness() -> JSONResponse:
-        knowledge_ready = await anyio.Path(settings.knowledge_db_path).is_file()
-        postgres_ready = await database_is_ready(engine)
-        ready = knowledge_ready and postgres_ready
+        is_knowledge_database_ready = await anyio.Path(settings.knowledge_db_path).is_file()
+        is_postgres_ready = await database_is_ready(engine)
+        is_ready = is_knowledge_database_ready and is_postgres_ready
         payload = {
-            "status": "ready" if ready else "not_ready",
-            "knowledge_database": "available" if knowledge_ready else "missing",
-            "postgres": "available" if postgres_ready else "unavailable",
+            "status": "ready" if is_ready else "not_ready",
+            "knowledge_database": ("available" if is_knowledge_database_ready else "missing"),
+            "postgres": "available" if is_postgres_ready else "unavailable",
             "agent": "configured",
             "slack": "configured",
             "inngest": "configured",
         }
-        return JSONResponse(payload, status_code=200 if ready else 503)
+        return JSONResponse(payload, status_code=200 if is_ready else 503)
 
     ledger = PostgresRunLedger(
         engine,

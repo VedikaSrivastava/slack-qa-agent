@@ -12,7 +12,12 @@ def _normalize(value: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9_./:-]+", " ", value.lower()).split())
 
 
-def evaluate_response(case: EvalCase, response: AgentResponse) -> EvalResult:
+def evaluate_response(
+    case: EvalCase,
+    response: AgentResponse,
+    *,
+    duration_ms: int | None = None,
+) -> EvalResult:
     normalized_answer = _normalize(response.answer)
     checks: list[CheckResult] = []
     exact_groups = {
@@ -33,7 +38,10 @@ def evaluate_response(case: EvalCase, response: AgentResponse) -> EvalResult:
         )
 
     source_ids = [source.artifact_id for source in response.sources]
-    missing_sources = sorted(set(case.expected_source_ids) - set(source_ids))
+    missing_citations = sorted(set(case.expected_source_ids) - set(source_ids))
+    missing_retrievals = sorted(
+        set(case.expected_source_ids) - set(response.retrieved_artifact_ids)
+    )
     forbidden_found = [
         value for value in case.forbidden_phrases if _normalize(value) in normalized_answer
     ]
@@ -45,9 +53,14 @@ def evaluate_response(case: EvalCase, response: AgentResponse) -> EvalResult:
                 details="no sources returned" if not source_ids else "",
             ),
             CheckResult(
-                name="expected_source_ids",
-                passed=not missing_sources,
-                details=f"missing: {missing_sources}" if missing_sources else "",
+                name="citation_recall",
+                passed=not missing_citations,
+                details=f"missing: {missing_citations}" if missing_citations else "",
+            ),
+            CheckResult(
+                name="retrieval_recall",
+                passed=not missing_retrievals,
+                details=f"missing: {missing_retrievals}" if missing_retrievals else "",
             ),
             CheckResult(
                 name="forbidden_phrases",
@@ -57,17 +70,29 @@ def evaluate_response(case: EvalCase, response: AgentResponse) -> EvalResult:
             CheckResult(
                 name="tool_call_budget",
                 passed=response.tool_call_count <= case.max_tool_calls,
-                details=f"{response.tool_call_count} > {case.max_tool_calls}",
+                details=(
+                    f"{response.tool_call_count} > {case.max_tool_calls}"
+                    if response.tool_call_count > case.max_tool_calls
+                    else ""
+                ),
             ),
             CheckResult(
                 name="retrieval_round_budget",
                 passed=response.retrieval_round_count <= case.max_retrieval_rounds,
-                details=f"{response.retrieval_round_count} > {case.max_retrieval_rounds}",
+                details=(
+                    f"{response.retrieval_round_count} > {case.max_retrieval_rounds}"
+                    if response.retrieval_round_count > case.max_retrieval_rounds
+                    else ""
+                ),
             ),
             CheckResult(
                 name="evidence_sufficiency",
                 passed=not response.insufficient_evidence or case.insufficient_evidence_acceptable,
-                details="agent reported insufficient evidence",
+                details=(
+                    "agent reported insufficient evidence"
+                    if response.insufficient_evidence and not case.insufficient_evidence_acceptable
+                    else ""
+                ),
             ),
         ]
     )
@@ -77,6 +102,11 @@ def evaluate_response(case: EvalCase, response: AgentResponse) -> EvalResult:
         checks=checks,
         answer=response.answer,
         source_ids=source_ids,
+        retrieved_artifact_ids=response.retrieved_artifact_ids,
         tool_call_count=response.tool_call_count,
         retrieval_round_count=response.retrieval_round_count,
+        model_call_count=response.model_call_count,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        duration_ms=duration_ms,
     )

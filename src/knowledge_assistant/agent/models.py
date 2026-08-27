@@ -15,7 +15,9 @@ class EvidenceReference(BaseModel):
 class AgentResponse(BaseModel):
     answer: str
     sources: list[EvidenceReference] = Field(default_factory=list)
+    retrieved_artifact_ids: list[str] = Field(default_factory=list)
     tool_call_count: int = Field(default=0, ge=0)
+    model_call_count: int = Field(default=0, ge=0)
     retrieval_round_count: int = Field(default=0, ge=0, le=2)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)

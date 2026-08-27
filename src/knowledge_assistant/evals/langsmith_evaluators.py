@@ -13,7 +13,11 @@ from langsmith.schemas import Example, Run
 from pydantic import BaseModel, Field
 
 from knowledge_assistant.agent.models import AgentResponse
-from knowledge_assistant.agent.profiles import EVALUATOR_MODEL_NAME
+from knowledge_assistant.agent.profiles import (
+    EVALUATOR_MODEL_NAME,
+    OPENAI_MAX_RETRIES,
+    OPENAI_REQUEST_TIMEOUT_SECONDS,
+)
 from knowledge_assistant.config import EvaluationSettings
 from knowledge_assistant.evals.evaluators import evaluate_response
 from knowledge_assistant.evals.langsmith_dataset import case_from_reference
@@ -44,25 +48,39 @@ def deterministic_pass(
     }
 
 
-def source_recall(
+def _recall_score(expected_artifact_ids: set[str], actual_artifact_ids: set[str]) -> float:
+    if not expected_artifact_ids:
+        return 1.0
+    return len(expected_artifact_ids & actual_artifact_ids) / len(expected_artifact_ids)
+
+
+def citation_recall(
     inputs: dict[str, Any],
     outputs: dict[str, Any],
     reference_outputs: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     del inputs
     case = case_from_reference(reference_outputs)
-    expected_source_ids = set(case.expected_source_ids)
-    actual_source_ids = {
-        str(source["artifact_id"])
-        for source in outputs["response"].get("sources", [])
-        if isinstance(source, dict) and "artifact_id" in source
+    response = AgentResponse.model_validate(outputs["response"])
+    cited_artifact_ids = {source.artifact_id for source in response.sources}
+    return {
+        "key": "citation_recall",
+        "score": _recall_score(set(case.expected_source_ids), cited_artifact_ids),
     }
-    score = (
-        1.0
-        if not expected_source_ids
-        else len(expected_source_ids & actual_source_ids) / len(expected_source_ids)
-    )
-    return {"key": "source_recall", "score": score}
+
+
+def retrieval_recall(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    del inputs
+    case = case_from_reference(reference_outputs)
+    response = AgentResponse.model_validate(outputs["response"])
+    return {
+        "key": "retrieval_recall",
+        "score": _recall_score(set(case.expected_source_ids), set(response.retrieved_artifact_ids)),
+    }
 
 
 def action_budget_pass(
@@ -93,6 +111,8 @@ def create_reference_correctness_evaluator(
     evaluator_model = ChatOpenAI(
         api_key=settings.openai_api_key,
         model=EVALUATOR_MODEL_NAME,
+        max_retries=OPENAI_MAX_RETRIES,
+        timeout=OPENAI_REQUEST_TIMEOUT_SECONDS,
     ).with_structured_output(ReferenceCorrectnessVerdict)
 
     async def evaluate_reference_correctness(

@@ -34,6 +34,13 @@ class EvalResult(BaseModel):
     passed: bool
     checks: list[CheckResult]
     answer: str
+    # `source_ids` are citations in the final answer; retrieved IDs are kept separate so
+    # retrieval failures can be distinguished from citation failures.
     source_ids: list[str]
+    retrieved_artifact_ids: list[str]
     tool_call_count: int
     retrieval_round_count: int
+    model_call_count: int
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    duration_ms: int | None = Field(default=None, ge=0)

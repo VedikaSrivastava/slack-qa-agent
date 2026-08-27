@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+import pytest
+
+from knowledge_assistant.config import SlackApplicationSettings
 from knowledge_assistant.execution.dispatcher import QuestionDispatcher
 from knowledge_assistant.execution.models import QuestionJob
-from knowledge_assistant.integrations.slack.app import process_app_mention
+from knowledge_assistant.integrations.slack.app import create_slack_app, process_app_mention
 from knowledge_assistant.persistence.repositories import RunLedger
 
 
 class FakeDispatcher:
-    def __init__(self) -> None:
+    def __init__(self, event_ids: list[str] | None = None) -> None:
         self.jobs: list[QuestionJob] = []
+        self.event_ids = ["inngest-event"] if event_ids is None else event_ids
 
     async def enqueue(self, job: QuestionJob) -> list[str]:
         self.jobs.append(job)
-        return ["inngest-event"]
+        return self.event_ids
+
+
+class BlockingDispatcher:
+    async def enqueue(self, job: QuestionJob) -> list[str]:
+        del job
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
 
 class FakeLedger:
@@ -39,6 +51,17 @@ def _event(text: str) -> dict[str, Any]:
         "ts": "123.456",
         "text": text,
     }
+
+
+def _settings() -> SlackApplicationSettings:
+    return SlackApplicationSettings(
+        _env_file=None,
+        app_env="test",
+        openai_api_key="test-key",
+        slack_bot_token="xoxb-test",
+        slack_signing_secret="test-signing-secret",
+        database_url="postgresql+asyncpg://user:password@postgres/test",
+    )
 
 
 async def test_empty_mention_receives_helpful_response() -> None:
@@ -87,3 +110,80 @@ async def test_duplicate_slack_delivery_resends_same_durable_job() -> None:
         (ledger.run_id, "inngest-event"),
         (ledger.run_id, "inngest-event"),
     ]
+
+
+@pytest.mark.parametrize("subtype", ["bot_message", "message_changed", "message_deleted"])
+async def test_non_standard_message_subtypes_are_ignored(subtype: str) -> None:
+    async def respond(**_kwargs: str) -> None:
+        raise AssertionError("ignored events must not receive a response")
+
+    dispatcher = FakeDispatcher()
+    ledger = FakeLedger()
+    event = _event("<@UBOT> What changed?")
+    event["subtype"] = subtype
+
+    await process_app_mention(
+        body={"event_id": "Ev1", "team_id": "T1"},
+        event=event,
+        respond=respond,
+        dispatcher=cast(QuestionDispatcher, dispatcher),
+        ledger=cast(RunLedger, ledger),
+    )
+
+    assert dispatcher.jobs == []
+    assert ledger.calls == 0
+
+
+async def test_missing_inngest_event_id_fails_the_slack_request() -> None:
+    async def respond(**_kwargs: str) -> None:
+        raise AssertionError("valid questions must not use the validation response")
+
+    dispatcher = FakeDispatcher(event_ids=[])
+    ledger = FakeLedger()
+
+    with pytest.raises(RuntimeError, match="Inngest returned no event ID"):
+        await process_app_mention(
+            body={"event_id": "Ev1", "team_id": "T1"},
+            event=_event("<@UBOT> What changed?"),
+            respond=respond,
+            dispatcher=cast(QuestionDispatcher, dispatcher),
+            ledger=cast(RunLedger, ledger),
+        )
+
+    assert len(dispatcher.jobs) == 1
+    assert ledger.attachments == []
+
+
+async def test_durable_handoff_is_bounded_below_slack_ack_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def respond(**_kwargs: str) -> None:
+        raise AssertionError("valid questions must not use the validation response")
+
+    monkeypatch.setattr(
+        "knowledge_assistant.integrations.slack.app.SLACK_DURABLE_HANDOFF_TIMEOUT_SECONDS",
+        0.001,
+    )
+    ledger = FakeLedger()
+
+    with pytest.raises(TimeoutError):
+        await process_app_mention(
+            body={"event_id": "Ev1", "team_id": "T1"},
+            event=_event("<@UBOT> What changed?"),
+            respond=respond,
+            dispatcher=cast(QuestionDispatcher, BlockingDispatcher()),
+            ledger=cast(RunLedger, ledger),
+        )
+
+    assert ledger.calls == 1
+    assert ledger.attachments == []
+
+
+def test_slack_app_waits_for_durable_dispatch_before_acknowledging() -> None:
+    slack_app = create_slack_app(
+        _settings(),
+        cast(QuestionDispatcher, FakeDispatcher()),
+        cast(RunLedger, FakeLedger()),
+    )
+
+    assert slack_app.process_before_response is True

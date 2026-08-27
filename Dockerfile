@@ -16,10 +16,20 @@ FROM builder AS validation
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --all-groups --no-editable
 COPY tests ./tests
+COPY alembic ./alembic
+COPY scripts ./scripts
+COPY AGENTS.md ./AGENTS.md
+COPY docs ./docs
+COPY evals/results/README.md ./evals/results/README.md
+COPY data/README.md ./data/README.md
+# Keep the assignment fixture out of the runtime image, but include it here so the supplied-schema
+# integration test cannot silently skip during image validation.
+COPY data/synthetic_startup.sqlite ./data/synthetic_startup.sqlite
 RUN uv run ruff check . \
     && uv run ruff format --check . \
     && uv run mypy src tests \
-    && uv run pytest
+    && uv run pytest -m "not integration" \
+    && uv run pytest -m integration
 
 FROM python:3.12-slim-bookworm AS runtime
 ENV PATH="/app/.venv/bin:$PATH" \
@@ -29,7 +39,6 @@ RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /app app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
-COPY --chown=app:app src ./src
 COPY --chown=app:app alembic ./alembic
 COPY --chown=app:app alembic.ini pyproject.toml README.md ./
 RUN mkdir -p /app/data && chown app:app /app/data

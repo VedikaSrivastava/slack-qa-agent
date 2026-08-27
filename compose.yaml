@@ -25,7 +25,7 @@ services:
       POSTGRES_USER: slack_qa
       POSTGRES_PASSWORD: slack_qa_local_dev
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -55,7 +55,7 @@ services:
       target: runtime
     environment: *app-environment
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - type: bind
         source: ./data/synthetic_startup.sqlite
@@ -71,12 +71,26 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  slack-ingress:
+    image: nginx:1.29.1-alpine
+    ports:
+      - "127.0.0.1:8001:8080"
+    volumes:
+      - type: bind
+        source: ./deploy/slack_ingress/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
   inngest:
     image: inngest/inngest:v1.43.0
     command: ["inngest", "dev", "-u", "http://app:8000/api/inngest"]
     ports:
-      - "8288:8288"
-      - "8289:8289"
+      - "127.0.0.1:8288:8288"
+      - "127.0.0.1:8289:8289"
     depends_on:
       app:
         condition: service_started

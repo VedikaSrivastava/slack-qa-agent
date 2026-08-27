@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import TypedDict, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -27,6 +27,7 @@ from knowledge_assistant.retrieval.models import (
     MAX_CONTEXT_CHARS,
     AccountLookupInput,
     EvidenceItem,
+    JsonValue,
     ReadArtifactsInput,
     SearchHit,
     SearchKnowledgeInput,
@@ -34,6 +35,18 @@ from knowledge_assistant.retrieval.models import (
 
 MAX_INITIAL_QUERIES = 3
 MAX_REFINED_QUERIES = 2
+MAX_EVIDENCE_PAYLOAD_CHARS = 32_000
+INSUFFICIENT_EVIDENCE_ANSWER = "I couldn't answer this from the knowledge base."
+
+
+class ModelCallBudgetExceededError(RuntimeError):
+    """Raised before a workflow can exceed its code-reviewed model-call budget."""
+
+
+class PromptEvidence(TypedDict):
+    artifact_id: str
+    title: str
+    content: str
 
 
 class StandaloneQuestion(BaseModel):
@@ -93,10 +106,55 @@ class GroundingVerdict(BaseModel):
 
 
 def _evidence_payload(state: AgentState) -> str:
-    return json.dumps(state.get("evidence", []), ensure_ascii=False, separators=(",", ":"))
+    """Serialize only prompt-required evidence within an escaped JSON character budget."""
+
+    prompt_evidence: list[PromptEvidence] = []
+    for raw_item in state.get("evidence", []):
+        item = EvidenceItem.model_validate(raw_item)
+        candidate = PromptEvidence(
+            artifact_id=item.artifact_id,
+            title=item.title,
+            content=item.content,
+        )
+        candidate_payload = json.dumps(
+            [*prompt_evidence, candidate], ensure_ascii=False, separators=(",", ":")
+        )
+        if len(candidate_payload) <= MAX_EVIDENCE_PAYLOAD_CHARS:
+            prompt_evidence.append(candidate)
+            continue
+
+        # JSON escaping can expand quotes and backslashes, so calculate the largest safe prefix
+        # against the serialized payload instead of subtracting raw string lengths.
+        lower_bound = 0
+        upper_bound = len(item.content)
+        bounded_candidate: PromptEvidence | None = None
+        while lower_bound <= upper_bound:
+            midpoint = (lower_bound + upper_bound) // 2
+            truncated_candidate = PromptEvidence(
+                artifact_id=item.artifact_id,
+                title=item.title,
+                content=item.content[:midpoint],
+            )
+            truncated_payload = json.dumps(
+                [*prompt_evidence, truncated_candidate],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if len(truncated_payload) <= MAX_EVIDENCE_PAYLOAD_CHARS:
+                bounded_candidate = truncated_candidate
+                lower_bound = midpoint + 1
+            else:
+                upper_bound = midpoint - 1
+        if bounded_candidate is not None:
+            prompt_evidence.append(bounded_candidate)
+        break
+
+    return json.dumps(prompt_evidence, ensure_ascii=False, separators=(",", ":"))
 
 
 def _rank_unique_artifact_ids(hits: list[SearchHit], limit: int) -> list[str]:
+    """Keep SQLite BM25 order, where lower (often more negative) scores rank first."""
+
     ranked_ids: list[str] = []
     for hit in sorted(hits, key=lambda item: item.score if item.score is not None else 0):
         if hit.artifact_id not in ranked_ids:
@@ -145,10 +203,19 @@ class GroundedAnswerNodes:
         self._tools = tools
         self._profile = profile
 
-    async def resolve_question(self, state: AgentState) -> dict[str, Any]:
+    def _next_model_call_count(self, state: AgentState) -> int:
+        model_call_count = state.get("model_call_count", 0)
+        if model_call_count >= self._profile.max_model_calls:
+            raise ModelCallBudgetExceededError(
+                f"Agent profile {self._profile.name!r} exhausted its model-call budget"
+            )
+        return model_call_count + 1
+
+    async def resolve_question(self, state: AgentState) -> AgentState:
         history = state.get("history", [])[-self._profile.max_history_turns :]
         if not history:
             return {"standalone_question": state["question"], "history": []}
+        model_call_count = self._next_model_call_count(state)
         resolver = self._model.with_structured_output(StandaloneQuestion)
         result = await resolver.ainvoke(
             [
@@ -162,9 +229,14 @@ class GroundedAnswerNodes:
             ]
         )
         parsed = cast(StandaloneQuestion, result)
-        return {"standalone_question": parsed.question, "history": history}
+        return {
+            "standalone_question": parsed.question,
+            "history": history,
+            "model_call_count": model_call_count,
+        }
 
-    async def plan_retrieval(self, state: AgentState) -> dict[str, Any]:
+    async def plan_retrieval(self, state: AgentState) -> AgentState:
+        model_call_count = self._next_model_call_count(state)
         planner = self._model.with_structured_output(RetrievalPlan)
         result = await planner.ainvoke(
             [
@@ -175,12 +247,15 @@ class GroundedAnswerNodes:
         parsed = cast(RetrievalPlan, result)
         return {
             "search_queries": parsed.queries[: self._profile.max_initial_queries],
-            "account_lookup": parsed.account_lookup.model_dump(mode="json")
+            "account_lookup": cast(
+                dict[str, JsonValue], parsed.account_lookup.model_dump(mode="json")
+            )
             if parsed.account_lookup
             else None,
+            "model_call_count": model_call_count,
         }
 
-    async def execute_retrieval(self, state: AgentState) -> dict[str, Any]:
+    async def execute_retrieval(self, state: AgentState) -> AgentState:
         existing_tool_calls = state.get("tool_call_count", 0)
         remaining_tool_calls = max(0, self._profile.max_tool_calls - existing_tool_calls)
         account_evidence, account_lookup_calls = await self._lookup_account_evidence(
@@ -203,7 +278,16 @@ class GroundedAnswerNodes:
             else self._profile.max_refined_queries
         )
         # Reserve one tool call to read full artifacts whenever lexical search can run.
-        search_query_limit = min(search_query_cap, max(0, remaining_tool_calls - 1))
+        can_add_lexical_evidence = (
+            len(evidence_before_lexical_read) < self._profile.max_artifacts
+            and sum(len(item.content) for item in evidence_before_lexical_read)
+            <= MAX_CONTEXT_CHARS - 1_000
+        )
+        search_query_limit = (
+            min(search_query_cap, max(0, remaining_tool_calls - 1))
+            if can_add_lexical_evidence
+            else 0
+        )
         search_queries = state.get("search_queries", [])[:search_query_limit]
         search_hits = await self._search_knowledge(search_queries)
         ranked_artifact_ids = _rank_unique_artifact_ids(
@@ -216,7 +300,9 @@ class GroundedAnswerNodes:
             can_read=remaining_tool_calls > len(search_queries),
         )
         return {
-            "evidence": [item.model_dump(mode="json") for item in evidence],
+            "evidence": [
+                cast(dict[str, JsonValue], item.model_dump(mode="json")) for item in evidence
+            ],
             "retrieval_round_count": state.get("retrieval_round_count", 0) + 1,
             "tool_call_count": existing_tool_calls
             + len(search_queries)
@@ -237,9 +323,11 @@ class GroundedAnswerNodes:
         )
         if not lookup_allowed:
             return [], 0
-        evidence = await self._tools.lookup_accounts(
-            AccountLookupInput.model_validate(account_lookup)
+        request = AccountLookupInput.model_validate(account_lookup)
+        bounded_request = request.model_copy(
+            update={"limit": min(request.limit, self._profile.max_artifacts)}
         )
+        evidence = await self._tools.lookup_accounts(bounded_request)
         return evidence, 1
 
     async def _search_knowledge(self, queries: list[str]) -> list[SearchHit]:
@@ -284,7 +372,8 @@ class GroundedAnswerNodes:
             1,
         )
 
-    async def grade_evidence(self, state: AgentState) -> dict[str, Any]:
+    async def grade_evidence(self, state: AgentState) -> AgentState:
+        model_call_count = self._next_model_call_count(state)
         grader = self._model.with_structured_output(EvidenceGrade)
         result = await grader.ainvoke(
             [
@@ -299,6 +388,7 @@ class GroundedAnswerNodes:
             "evidence_sufficient": parsed.sufficient,
             "insufficiency_reason": parsed.reason,
             "search_queries": parsed.refined_queries[:MAX_REFINED_QUERIES],
+            "model_call_count": model_call_count,
         }
 
     def route_after_grade(self, state: AgentState) -> str:
@@ -309,17 +399,20 @@ class GroundedAnswerNodes:
             return "generate"
         return "refine"
 
-    async def refine_retrieval(self, state: AgentState) -> dict[str, Any]:
+    async def refine_retrieval(self, state: AgentState) -> AgentState:
         queries = [query for query in state.get("search_queries", []) if query.strip()]
         if not queries:
             queries = [state["standalone_question"]]
         return {"search_queries": queries[: self._profile.max_refined_queries]}
 
-    async def generate_answer(self, state: AgentState) -> dict[str, Any]:
+    async def generate_answer(self, state: AgentState) -> AgentState:
         if not state.get("evidence"):
-            reason = state.get("insufficiency_reason", "No supporting evidence was found.")
-            answer = f"I couldn't answer this from the knowledge base. {reason}"
-            return {"draft_answer": answer, "final_answer": answer, "grounding_valid": True}
+            return {
+                "draft_answer": INSUFFICIENT_EVIDENCE_ANSWER,
+                "final_answer": INSUFFICIENT_EVIDENCE_ANSWER,
+                "grounding_valid": True,
+            }
+        model_call_count = self._next_model_call_count(state)
         response = await self._model.ainvoke(
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{GENERATE_ANSWER}"),
@@ -329,9 +422,11 @@ class GroundedAnswerNodes:
             ]
         )
         answer = str(response.content)
-        return {"draft_answer": answer, "final_answer": answer}
+        # `final_answer` is reserved for terminal outcomes. A later repair must be able to replace
+        # this draft without finalization preferring the rejected text.
+        return {"draft_answer": answer, "model_call_count": model_call_count}
 
-    async def verify_grounding(self, state: AgentState) -> dict[str, Any]:
+    async def verify_grounding(self, state: AgentState) -> AgentState:
         if not state.get("evidence"):
             return {"grounding_valid": True, "grounding_issues": []}
         evidence = [EvidenceItem.model_validate(item) for item in state["evidence"]]
@@ -339,6 +434,7 @@ class GroundedAnswerNodes:
         if deterministic_issues:
             return {"grounding_valid": False, "grounding_issues": deterministic_issues}
 
+        model_call_count = self._next_model_call_count(state)
         verifier = self._model.with_structured_output(GroundingVerdict)
         result = await verifier.ainvoke(
             [
@@ -352,12 +448,17 @@ class GroundedAnswerNodes:
             ]
         )
         parsed = cast(GroundingVerdict, result)
-        return {"grounding_valid": parsed.valid, "grounding_issues": parsed.issues}
+        return {
+            "grounding_valid": parsed.valid,
+            "grounding_issues": parsed.issues,
+            "model_call_count": model_call_count,
+        }
 
     def route_after_verify(self, state: AgentState) -> str:
         return "finalize" if state.get("grounding_valid") else "repair"
 
-    async def repair_answer(self, state: AgentState) -> dict[str, Any]:
+    async def repair_answer(self, state: AgentState) -> AgentState:
+        model_call_count = self._next_model_call_count(state)
         response = await self._model.ainvoke(
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{REPAIR_ANSWER}"),
@@ -371,9 +472,9 @@ class GroundedAnswerNodes:
                 ),
             ]
         )
-        return {"draft_answer": str(response.content), "repair_attempted": True}
+        return {"draft_answer": str(response.content), "model_call_count": model_call_count}
 
-    async def reject_ungrounded_answer(self, state: AgentState) -> dict[str, Any]:
+    async def reject_ungrounded_answer(self, state: AgentState) -> AgentState:
         del state
         return {
             "final_answer": (
@@ -381,7 +482,7 @@ class GroundedAnswerNodes:
             )
         }
 
-    async def finalize(self, state: AgentState) -> dict[str, Any]:
+    async def finalize(self, state: AgentState) -> AgentState:
         answer = state.get("final_answer") or state["draft_answer"]
         turn = ConversationTurn(question=state["question"], answer=answer)
         history = [*state.get("history", []), turn][-self._profile.max_history_turns :]

@@ -11,7 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APPLICATION_VERSION = "0.1.0"
 PROMPT_VERSION = "v1"
-RETRIEVAL_VERSION = "v1"
+# v3 adds recall-safe structured filters to v2's cumulative, deduplicated refinement evidence.
+RETRIEVAL_VERSION = "v3"
 LANGSMITH_PROJECT_NAME = "slack-qa-agent"
 
 SETTINGS_CONFIG = SettingsConfigDict(
@@ -72,6 +73,34 @@ class AgentRuntimeSettings(DatabaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+
+class LangSmithSettings(BaseSettings):
+    """Credentials required for dataset-only LangSmith operations."""
+
+    model_config = SETTINGS_CONFIG
+
+    langsmith_api_key: SecretStr
+
+    @field_validator("langsmith_api_key", mode="after")
+    @classmethod
+    def reject_blank_langsmith_key(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("LANGSMITH_API_KEY must not be blank")
+        return value
+
+
+class AugmentationSettings(LangSmithSettings):
+    """Credentials required to generate and store evaluation candidates."""
+
+    openai_api_key: SecretStr
+
+    @field_validator("openai_api_key", mode="after")
+    @classmethod
+    def reject_blank_openai_key(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("OPENAI_API_KEY must not be blank")
+        return value
 
 
 class EvaluationSettings(AgentRuntimeSettings):

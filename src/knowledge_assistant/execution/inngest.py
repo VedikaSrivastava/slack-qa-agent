@@ -20,8 +20,43 @@ logger = structlog.get_logger(__name__)
 ProcessorProvider = Callable[[], QuestionProcessor]
 
 
+def _log_safe_error_publish_failure(job: QuestionJob, exc: Exception) -> None:
+    """Record the failure class without exposing provider text or exception arguments."""
+
+    logger.error(
+        "slack_safe_error_publish_failed",
+        agent_run_id=str(job.agent_run_id),
+        conversation_id=job.conversation_id,
+        error_code="slack_safe_error_publish_failed",
+        exception_class=type(exc).__name__,
+    )
+
+
 def create_inngest_client(settings: SlackApplicationSettings) -> inngest.Inngest:
     return inngest.Inngest(app_id="slack-qa-agent", is_production=settings.is_production)
+
+
+async def ensure_agent_result(
+    *,
+    job: QuestionJob,
+    processor_provider: ProcessorProvider,
+    ledger: RunLedger,
+) -> AgentResponse:
+    """Create or reuse the result persisted before the Inngest step is acknowledged."""
+
+    persisted_response = await ledger.get_persisted_agent_result(job.agent_run_id)
+    if persisted_response is not None:
+        return persisted_response
+
+    response = await processor_provider().answer(
+        question=job.question,
+        conversation_id=job.conversation_id,
+        agent_run_id=str(job.agent_run_id),
+    )
+    # Commit the expensive output while status remains running. If Inngest loses the step
+    # acknowledgement, the replay above can reuse it without marking delivery complete early.
+    await ledger.persist_agent_result(job.agent_run_id, response)
+    return response
 
 
 def create_question_function(
@@ -33,10 +68,14 @@ def create_question_function(
 ) -> Any:
     """Register one durable function; LangGraph remains one coarse agent step."""
 
+    # Inngest invokes this hook only after all configured function retries are exhausted.
     async def on_failure(ctx: inngest.Context) -> None:
         original = ctx.event.data.get("event")
         if not isinstance(original, dict) or not isinstance(original.get("data"), dict):
-            logger.error("inngest_failure_payload_invalid")
+            logger.error(
+                "inngest_failure_payload_invalid",
+                error_code="inngest_failure_payload_invalid",
+            )
             return
         job = QuestionJob.model_validate(original["data"])
         await ledger.mark_failed(
@@ -47,11 +86,7 @@ def create_question_function(
         try:
             await publisher.publish_safe_error(job.agent_run_id)
         except Exception as exc:
-            logger.error(
-                "slack_safe_error_publish_failed",
-                agent_run_id=str(job.agent_run_id),
-                exception_class=type(exc).__name__,
-            )
+            _log_safe_error_publish_failure(job, exc)
 
     @client.create_function(
         fn_id="process-slack-question",
@@ -75,13 +110,10 @@ def create_question_function(
             return await publisher.ensure_placeholder(job.agent_run_id)
 
         async def run_agent() -> dict[str, Any]:
-            completed = await ledger.get_completed_result(job.agent_run_id)
-            if completed is not None:
-                return completed.model_dump(mode="json")
-            response = await processor_provider().answer(
-                question=job.question,
-                conversation_id=job.conversation_id,
-                agent_run_id=str(job.agent_run_id),
+            response = await ensure_agent_result(
+                job=job,
+                processor_provider=processor_provider,
+                ledger=ledger,
             )
             return response.model_dump(mode="json")
 
@@ -93,15 +125,20 @@ def create_question_function(
         async def mark_completed(payload: dict[str, Any]) -> None:
             await ledger.mark_succeeded(job.agent_run_id, AgentResponse.model_validate(payload))
 
+        # Separate memoized steps let retries resume after completed durable or user-visible effects.
         await ctx.step.run("mark-run-started", mark_started)
         await ctx.step.run("ensure-status-message", ensure_status_message)
         response_payload = cast(dict[str, Any], await ctx.step.run("run-agent", run_agent))
+        response = AgentResponse.model_validate(response_payload)
         await ctx.step.run("publish-answer", publish_answer, response_payload)
         await ctx.step.run("mark-run-completed", mark_completed, response_payload)
         logger.info(
             "slack_question_completed",
             agent_run_id=str(job.agent_run_id),
             conversation_id=job.conversation_id,
+            model_call_count=response.model_call_count,
+            retrieval_round_count=response.retrieval_round_count,
+            tool_call_count=response.tool_call_count,
         )
         return {"agent_run_id": str(job.agent_run_id), "status": "succeeded"}
 
