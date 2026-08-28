@@ -330,6 +330,7 @@ async def test_successful_repair_replaces_the_rejected_original_draft() -> None:
     tools = FakeRetrievalTools(search_results={}, artifacts={})
     nodes = GroundedAnswerNodes(cast(BaseChatModel, model), tools, PRODUCTION_PROFILE)
     state = _state("query", evidence=[_evidence("art_a")])
+    state["agent_run_id"] = "run"
     state["question"] = "What happened?"
     state["standalone_question"] = "What happened?"
     state["final_answer"] = ""

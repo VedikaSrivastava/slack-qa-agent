@@ -13,6 +13,7 @@ x-app-environment: &app-environment
   LANGSMITH_PROJECT: slack-qa-agent
   SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
   SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+  SLACK_ROUTING_POLICY: ${SLACK_ROUTING_POLICY:-agent_owned_thread_follow_ups}
   KNOWLEDGE_DB_PATH: /app/data/synthetic_startup.sqlite
   INNGEST_DEV: "1"
   INNGEST_BASE_URL: http://inngest:8288
@@ -83,6 +84,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      inngest:
+        condition: service_healthy
     restart: unless-stopped
 
   inngest:
@@ -94,6 +97,12 @@ services:
     depends_on:
       app:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "inngest", "alpha", "doctor", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

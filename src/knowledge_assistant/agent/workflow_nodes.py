@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import TypedDict, cast
+import re
+from typing import TypedDict, TypeVar, cast
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from knowledge_assistant.agent.citations import citation_issues
+from knowledge_assistant.agent.models import QuestionDisposition
 from knowledge_assistant.agent.profiles import AgentProfile
 from knowledge_assistant.agent.prompts import (
     GENERATE_ANSWER,
@@ -37,6 +39,31 @@ MAX_INITIAL_QUERIES = 3
 MAX_REFINED_QUERIES = 2
 MAX_EVIDENCE_PAYLOAD_CHARS = 32_000
 INSUFFICIENT_EVIDENCE_ANSWER = "I couldn't answer this from the knowledge base."
+GREETING_ANSWER = (
+    "Hi! I can answer questions grounded in the internal knowledge base. "
+    "What would you like to know?"
+)
+OUT_OF_SCOPE_ANSWER = (
+    "I can help with questions answered from the internal knowledge base, but I can't handle "
+    "that request. Ask me about a customer, product, incident, process, or other documented "
+    "internal topic."
+)
+
+_SIMPLE_GREETINGS = frozenset(
+    {
+        "good afternoon",
+        "good evening",
+        "good morning",
+        "hello",
+        "hello there",
+        "hey",
+        "hey there",
+        "hi",
+        "hi there",
+        "hiya",
+        "howdy",
+    }
+)
 
 
 class ModelCallBudgetExceededError(RuntimeError):
@@ -62,8 +89,10 @@ class StandaloneQuestion(BaseModel):
 
 
 class RetrievalPlan(BaseModel):
-    queries: list[str] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
+    disposition: QuestionDisposition
+    queries: list[str] = Field(default_factory=list, max_length=MAX_INITIAL_QUERIES)
     account_lookup: AccountLookupInput | None = None
+    clarification_question: str | None = Field(default=None, min_length=1, max_length=300)
 
     @field_validator("queries")
     @classmethod
@@ -72,6 +101,36 @@ class RetrievalPlan(BaseModel):
         if any(not query for query in normalized):
             raise ValueError("retrieval queries must contain searchable text")
         return list(dict.fromkeys(normalized))
+
+    @field_validator("clarification_question")
+    @classmethod
+    def normalize_clarification_question(cls, question: str | None) -> str | None:
+        if question is None:
+            return None
+        normalized = " ".join(question.split()).rstrip(".!?")
+        if not normalized:
+            raise ValueError("clarification question must contain text")
+        return f"{normalized[:299]}?"
+
+    @model_validator(mode="after")
+    def require_fields_for_disposition(self) -> RetrievalPlan:
+        if self.disposition is QuestionDisposition.KNOWLEDGE_QUESTION:
+            if not self.queries:
+                raise ValueError("knowledge questions require at least one retrieval query")
+            if self.clarification_question is not None:
+                raise ValueError("knowledge questions cannot include a clarification question")
+            return self
+        if self.disposition is QuestionDisposition.NEEDS_CLARIFICATION:
+            if self.clarification_question is None:
+                raise ValueError("unclear questions require one clarification question")
+            if self.queries or self.account_lookup is not None:
+                raise ValueError("unclear questions cannot trigger retrieval")
+            return self
+        if self.queries or self.account_lookup is not None:
+            raise ValueError("non-knowledge messages cannot trigger retrieval")
+        if self.clarification_question is not None:
+            raise ValueError("only unclear questions can include a clarification question")
+        return self
 
 
 class EvidenceGrade(BaseModel):
@@ -103,6 +162,38 @@ class GroundingVerdict(BaseModel):
         if not self.valid and not self.issues:
             raise ValueError("invalid grounding verdict requires at least one issue")
         return self
+
+
+StructuredOutput = TypeVar("StructuredOutput", bound=BaseModel)
+
+
+def _is_simple_greeting(message: str) -> bool:
+    """Recognize only whole-message greetings so substantive questions still reach the model."""
+
+    normalized = " ".join(re.sub(r"[\W_]+", " ", message.casefold()).split())
+    return normalized in _SIMPLE_GREETINGS
+
+
+def _token_usage(response: object | None) -> tuple[int, int]:
+    """Read normalized token counts from a LangChain message without trusting dynamic metadata."""
+
+    usage = getattr(response, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        return 0, 0
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    return (
+        input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else 0,
+        output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else 0,
+    )
+
+
+def _usage_state_update(state: AgentState, response: object | None) -> AgentState:
+    input_tokens, output_tokens = _token_usage(response)
+    return {
+        "input_tokens": state.get("input_tokens", 0) + input_tokens,
+        "output_tokens": state.get("output_tokens", 0) + output_tokens,
+    }
 
 
 def _evidence_payload(state: AgentState) -> str:
@@ -211,41 +302,82 @@ class GroundedAnswerNodes:
             )
         return model_call_count + 1
 
+    async def _invoke_structured(
+        self,
+        output_type: type[StructuredOutput],
+        messages: list[BaseMessage],
+    ) -> tuple[StructuredOutput, object | None]:
+        """Return parsed output plus its raw message so usage survives graph checkpoints."""
+
+        structured_model = self._model.with_structured_output(output_type, include_raw=True)
+        result = await structured_model.ainvoke(messages)
+        # Test doubles and some compatible model wrappers may return the parsed object directly.
+        if isinstance(result, output_type):
+            return result, None
+        if not isinstance(result, dict):
+            raise TypeError(f"Structured model returned unexpected {type(result).__name__}")
+        parsed = result.get("parsed")
+        if not isinstance(parsed, output_type):
+            parsing_error = result.get("parsing_error")
+            if isinstance(parsing_error, BaseException):
+                raise ValueError("Structured model output could not be parsed") from parsing_error
+            raise ValueError("Structured model output did not contain the expected parsed value")
+        return parsed, result.get("raw")
+
     async def resolve_question(self, state: AgentState) -> AgentState:
         history = state.get("history", [])[-self._profile.max_history_turns :]
+        if _is_simple_greeting(state["question"]):
+            return {
+                "standalone_question": state["question"],
+                "history": history,
+                "question_disposition": QuestionDisposition.GREETING,
+                "final_answer": GREETING_ANSWER,
+                "grounding_valid": True,
+            }
         if not history:
             return {"standalone_question": state["question"], "history": []}
         model_call_count = self._next_model_call_count(state)
-        resolver = self._model.with_structured_output(StandaloneQuestion)
-        result = await resolver.ainvoke(
+        parsed, raw_response = await self._invoke_structured(
+            StandaloneQuestion,
             [
                 SystemMessage(content=RESOLVE_QUESTION),
                 HumanMessage(
                     content=json.dumps(
-                        {"recent_turns": history, "current_message": state["question"]},
+                        {
+                            "recent_turns": [
+                                {"question": turn["question"], "answer": turn["answer"]}
+                                for turn in history
+                            ],
+                            "current_message": state["question"],
+                        },
                         ensure_ascii=False,
                     )
                 ),
-            ]
+            ],
         )
-        parsed = cast(StandaloneQuestion, result)
         return {
             "standalone_question": parsed.question,
             "history": history,
             "model_call_count": model_call_count,
+            **_usage_state_update(state, raw_response),
         }
+
+    def route_after_resolution(self, state: AgentState) -> str:
+        if QuestionDisposition(state["question_disposition"]) is QuestionDisposition.GREETING:
+            return "finalize"
+        return "plan"
 
     async def plan_retrieval(self, state: AgentState) -> AgentState:
         model_call_count = self._next_model_call_count(state)
-        planner = self._model.with_structured_output(RetrievalPlan)
-        result = await planner.ainvoke(
+        parsed, raw_response = await self._invoke_structured(
+            RetrievalPlan,
             [
                 SystemMessage(content=PLAN_RETRIEVAL),
                 HumanMessage(content=state["standalone_question"]),
-            ]
+            ],
         )
-        parsed = cast(RetrievalPlan, result)
-        return {
+        update: AgentState = {
+            "question_disposition": parsed.disposition,
             "search_queries": parsed.queries[: self._profile.max_initial_queries],
             "account_lookup": cast(
                 dict[str, JsonValue], parsed.account_lookup.model_dump(mode="json")
@@ -253,7 +385,28 @@ class GroundedAnswerNodes:
             if parsed.account_lookup
             else None,
             "model_call_count": model_call_count,
+            **_usage_state_update(state, raw_response),
         }
+        if parsed.disposition is QuestionDisposition.GREETING:
+            update.update({"final_answer": GREETING_ANSWER, "grounding_valid": True})
+        elif parsed.disposition is QuestionDisposition.NEEDS_CLARIFICATION:
+            update.update(
+                {
+                    "final_answer": cast(str, parsed.clarification_question),
+                    "grounding_valid": True,
+                }
+            )
+        elif parsed.disposition is QuestionDisposition.OUT_OF_SCOPE:
+            update.update({"final_answer": OUT_OF_SCOPE_ANSWER, "grounding_valid": True})
+        return update
+
+    def route_after_plan(self, state: AgentState) -> str:
+        if (
+            QuestionDisposition(state["question_disposition"])
+            is QuestionDisposition.KNOWLEDGE_QUESTION
+        ):
+            return "retrieve"
+        return "finalize"
 
     async def execute_retrieval(self, state: AgentState) -> AgentState:
         existing_tool_calls = state.get("tool_call_count", 0)
@@ -374,21 +527,21 @@ class GroundedAnswerNodes:
 
     async def grade_evidence(self, state: AgentState) -> AgentState:
         model_call_count = self._next_model_call_count(state)
-        grader = self._model.with_structured_output(EvidenceGrade)
-        result = await grader.ainvoke(
+        parsed, raw_response = await self._invoke_structured(
+            EvidenceGrade,
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{GRADE_EVIDENCE}"),
                 HumanMessage(
                     content=f"Question:\n{state['standalone_question']}\n\nEvidence:\n{_evidence_payload(state)}"
                 ),
-            ]
+            ],
         )
-        parsed = cast(EvidenceGrade, result)
         return {
             "evidence_sufficient": parsed.sufficient,
             "insufficiency_reason": parsed.reason,
             "search_queries": parsed.refined_queries[:MAX_REFINED_QUERIES],
             "model_call_count": model_call_count,
+            **_usage_state_update(state, raw_response),
         }
 
     def route_after_grade(self, state: AgentState) -> str:
@@ -424,7 +577,11 @@ class GroundedAnswerNodes:
         answer = str(response.content)
         # `final_answer` is reserved for terminal outcomes. A later repair must be able to replace
         # this draft without finalization preferring the rejected text.
-        return {"draft_answer": answer, "model_call_count": model_call_count}
+        return {
+            "draft_answer": answer,
+            "model_call_count": model_call_count,
+            **_usage_state_update(state, response),
+        }
 
     async def verify_grounding(self, state: AgentState) -> AgentState:
         if not state.get("evidence"):
@@ -435,8 +592,8 @@ class GroundedAnswerNodes:
             return {"grounding_valid": False, "grounding_issues": deterministic_issues}
 
         model_call_count = self._next_model_call_count(state)
-        verifier = self._model.with_structured_output(GroundingVerdict)
-        result = await verifier.ainvoke(
+        parsed, raw_response = await self._invoke_structured(
+            GroundingVerdict,
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{VERIFY_GROUNDING}"),
                 HumanMessage(
@@ -445,13 +602,13 @@ class GroundedAnswerNodes:
                         f"Draft:\n{state['draft_answer']}\n\nEvidence:\n{_evidence_payload(state)}"
                     )
                 ),
-            ]
+            ],
         )
-        parsed = cast(GroundingVerdict, result)
         return {
             "grounding_valid": parsed.valid,
             "grounding_issues": parsed.issues,
             "model_call_count": model_call_count,
+            **_usage_state_update(state, raw_response),
         }
 
     def route_after_verify(self, state: AgentState) -> str:
@@ -472,7 +629,11 @@ class GroundedAnswerNodes:
                 ),
             ]
         )
-        return {"draft_answer": str(response.content), "model_call_count": model_call_count}
+        return {
+            "draft_answer": str(response.content),
+            "model_call_count": model_call_count,
+            **_usage_state_update(state, response),
+        }
 
     async def reject_ungrounded_answer(self, state: AgentState) -> AgentState:
         del state
@@ -484,6 +645,15 @@ class GroundedAnswerNodes:
 
     async def finalize(self, state: AgentState) -> AgentState:
         answer = state.get("final_answer") or state["draft_answer"]
-        turn = ConversationTurn(question=state["question"], answer=answer)
-        history = [*state.get("history", []), turn][-self._profile.max_history_turns :]
+        turn = ConversationTurn(
+            agent_run_id=state["agent_run_id"],
+            question=state["question"],
+            answer=answer,
+        )
+        agent_run_id = state["agent_run_id"]
+        prior_turns = state.get("history", [])
+        prior_turns = [
+            prior_turn for prior_turn in prior_turns if prior_turn["agent_run_id"] != agent_run_id
+        ]
+        history = [*prior_turns, turn][-self._profile.max_history_turns :]
         return {"final_answer": answer, "history": history}

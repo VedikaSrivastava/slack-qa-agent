@@ -29,8 +29,16 @@ def build_graph(nodes: GroundedAnswerNodes, *, checkpointer: Any = None) -> Any:
     builder.add_node("finalize", cast(Any, nodes.finalize))
 
     builder.add_edge(START, "resolve_question")
-    builder.add_edge("resolve_question", "plan_retrieval")
-    builder.add_edge("plan_retrieval", "execute_retrieval")
+    builder.add_conditional_edges(
+        "resolve_question",
+        nodes.route_after_resolution,
+        {"plan": "plan_retrieval", "finalize": "finalize"},
+    )
+    builder.add_conditional_edges(
+        "plan_retrieval",
+        nodes.route_after_plan,
+        {"retrieve": "execute_retrieval", "finalize": "finalize"},
+    )
     builder.add_edge("execute_retrieval", "grade_evidence")
     builder.add_conditional_edges(
         "grade_evidence",

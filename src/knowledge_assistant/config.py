@@ -121,6 +121,9 @@ class SlackApplicationSettings(AgentRuntimeSettings):
 
     slack_bot_token: SecretStr
     slack_signing_secret: SecretStr
+    slack_routing_policy: Literal["explicit_mentions_only", "agent_owned_thread_follow_ups"] = (
+        "agent_owned_thread_follow_ups"
+    )
     inngest_dev: bool = True
     inngest_event_key: SecretStr | None = None
     inngest_signing_key: SecretStr | None = None

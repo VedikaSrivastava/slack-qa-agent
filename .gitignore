@@ -34,3 +34,4 @@ Thumbs.db
 # Recordings and generated reports
 recordings/
 evals/reports/
+slack-app-manifest.generated.yaml
