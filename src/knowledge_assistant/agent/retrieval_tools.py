@@ -54,8 +54,9 @@ class KnowledgeRetrievalTools:
             "account_lookup_completed",
             duration_ms=round((perf_counter() - started) * 1_000),
             account_count=len(results),
-            region=request.region,
-            country=request.country,
-            product=request.product,
+            has_region_filter=request.region is not None,
+            has_country_filter=request.country is not None,
+            has_product_filter=request.product is not None,
+            pain_point_term_count=len(request.pain_point_terms),
         )
         return results

@@ -17,13 +17,10 @@ venv/
 .env.*
 !.env.example
 
-# Local data and runtime state
-data/*.sqlite
-data/*.sqlite-*
-!data/.gitkeep
-applied-ai-take-home-database-main/
+# Local runtime state
 .runtime/
 .tmp/
+data/*.sqlite-*
 
 # LangGraph / LangSmith local state
 .langgraph_api/
@@ -37,3 +34,4 @@ Thumbs.db
 # Recordings and generated reports
 recordings/
 evals/reports/
+slack-app-manifest.generated.yaml

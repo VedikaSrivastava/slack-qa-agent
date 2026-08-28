@@ -6,12 +6,23 @@ from pydantic import ValidationError
 from knowledge_assistant.config import (
     LANGSMITH_PROJECT_NAME,
     AgentRuntimeSettings,
+    AugmentationSettings,
     EvaluationSettings,
+    LangSmithSettings,
     SlackApplicationSettings,
 )
 
 
-def test_required_runtime_configuration_fails_fast() -> None:
+def test_required_runtime_configuration_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable_name in (
+        "OPENAI_API_KEY",
+        "SLACK_BOT_TOKEN",
+        "SLACK_SIGNING_SECRET",
+        "DATABASE_URL",
+        "LANGSMITH_API_KEY",
+    ):
+        monkeypatch.delenv(variable_name, raising=False)
+
     with pytest.raises(ValidationError):
         SlackApplicationSettings(_env_file=None)
 
@@ -66,6 +77,26 @@ def test_experiment_configuration_is_independent_from_slack() -> None:
 
     assert LANGSMITH_PROJECT_NAME == "slack-qa-agent"
     assert settings.knowledge_db_path == Path("data/example.sqlite")
+
+
+def test_dataset_sync_configuration_requires_only_langsmith() -> None:
+    settings = LangSmithSettings(
+        _env_file=None,
+        langsmith_api_key="test-langsmith-key",
+    )
+
+    assert settings.langsmith_api_key.get_secret_value() == "test-langsmith-key"
+
+
+def test_augmentation_configuration_does_not_require_databases_or_slack() -> None:
+    settings = AugmentationSettings(
+        _env_file=None,
+        openai_api_key="test-openai-key",
+        langsmith_api_key="test-langsmith-key",
+    )
+
+    assert settings.openai_api_key.get_secret_value() == "test-openai-key"
+    assert settings.langsmith_api_key.get_secret_value() == "test-langsmith-key"
 
 
 def test_agent_runtime_is_independent_from_slack_and_langsmith() -> None:

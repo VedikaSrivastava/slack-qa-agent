@@ -6,12 +6,13 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from knowledge_assistant.retrieval.database import open_read_only_database
 from knowledge_assistant.retrieval.models import (
     AccountLookupInput,
     EvidenceItem,
+    JsonValue,
     ReadArtifactsInput,
     SearchHit,
     SearchKnowledgeInput,
@@ -19,10 +20,23 @@ from knowledge_assistant.retrieval.models import (
 from knowledge_assistant.retrieval.schema import KnowledgeSchema, validate_knowledge_schema
 
 MAX_STRUCTURED_EVIDENCE_CHARS = 1_500
+type SQLParameter = str | int
 
 
 def _escape_like_pattern(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _pain_point_search_terms(values: list[str]) -> list[str]:
+    """Convert model-produced pain concepts into recall-first literal tokens."""
+
+    search_terms: list[str] = []
+    for value in values:
+        # Model vocabulary will not always reproduce the stored phrase: "approval bypass" still
+        # needs to match "approval workflow failures". Geographic/product filters provide
+        # selectivity; these bounded tokens favor recall for the semantic pain-point dimension.
+        search_terms.extend(re.findall(r"[A-Za-z0-9]+", value))
+    return list(dict.fromkeys(search_terms))
 
 
 def _fts_query(value: str) -> str:
@@ -33,51 +47,64 @@ def _fts_query(value: str) -> str:
     return " OR ".join(f'"{token}"' for token in tokens)
 
 
-def _build_account_lookup_query(request: AccountLookupInput) -> tuple[str, list[Any]]:
+def _build_account_lookup_query(request: AccountLookupInput) -> tuple[str, list[SQLParameter]]:
     filter_clauses: list[str] = []
-    query_parameters: list[Any] = []
-    for column, value in (
-        ("c.region", request.region),
-        ("c.country", request.country),
-        ("p.name", request.product),
-    ):
+    query_parameters: list[SQLParameter] = []
+    if request.region is not None and request.country is None:
+        # Country is the more specific geographic constraint. Models sometimes infer a parent
+        # region that does not use the dataset's exact taxonomy; combining both with AND would
+        # incorrectly eliminate otherwise exact country matches.
+        filter_clauses.append("lower(c.region) LIKE ? ESCAPE '\\'")
+        query_parameters.append(f"%{_escape_like_pattern(request.region.lower())}%")
+
+    for column, value in (("c.country", request.country), ("p.name", request.product)):
         if value is not None:
-            filter_clauses.append(f"{column} = ?")
-            query_parameters.append(value)
+            filter_clauses.append(f"lower({column}) = ?")
+            query_parameters.append(value.lower())
 
     if request.pain_point_terms:
         pain_point_clauses = []
-        for term in request.pain_point_terms:
+        for term in _pain_point_search_terms(request.pain_point_terms):
             pain_point_clauses.append("lower(s.pain_point) LIKE ? ESCAPE '\\'")
             query_parameters.append(f"%{_escape_like_pattern(term.lower())}%")
         filter_clauses.append(f"({' OR '.join(pain_point_clauses)})")
 
     query = (
         """
-        SELECT
-            c.name AS _customer_name,
-            c.region AS _customer_region,
-            c.country AS _customer_country,
-            p.name AS _product_name,
-            s.pain_point AS _pain_point,
-            s.trigger_event AS _trigger_event,
-            a.*,
-            NULL AS _retrieval_score
-        FROM customers AS c
-        JOIN implementations AS i ON i.customer_id = c.customer_id
-        JOIN products AS p ON p.product_id = i.product_id
-        JOIN scenarios AS s ON s.scenario_id = c.scenario_id
-        JOIN artifacts AS a ON a.scenario_id = s.scenario_id
-        WHERE """
+        WITH ranked_accounts AS (
+            SELECT
+                c.name AS _customer_name,
+                c.region AS _customer_region,
+                c.country AS _customer_country,
+                p.name AS _product_name,
+                s.pain_point AS _pain_point,
+                s.trigger_event AS _trigger_event,
+                a.*,
+                NULL AS _retrieval_score,
+                ROW_NUMBER() OVER (
+                    PARTITION BY c.customer_id
+                    ORDER BY
+                        CASE a.artifact_type WHEN 'support_ticket' THEN 0 ELSE 1 END,
+                        a.created_at,
+                        a.artifact_id
+                ) AS _artifact_rank
+            FROM customers AS c
+            JOIN implementations AS i ON i.customer_id = c.customer_id
+            JOIN products AS p ON p.product_id = i.product_id
+            JOIN scenarios AS s ON s.scenario_id = c.scenario_id
+            JOIN artifacts AS a ON a.scenario_id = s.scenario_id
+            WHERE """
         + " AND ".join(filter_clauses)
         + """
-        ORDER BY
-            c.name,
-            CASE a.artifact_type WHEN 'support_ticket' THEN 0 ELSE 1 END,
-            a.created_at,
-            a.artifact_id
+        )
+        SELECT *
+        FROM ranked_accounts
+        WHERE _artifact_rank = 1
+        ORDER BY _customer_name, artifact_id
+        LIMIT ?
         """
     )
+    query_parameters.append(request.limit)
     return query, query_parameters
 
 
@@ -85,9 +112,6 @@ class SQLiteKnowledgeRepository:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._validated_schema: KnowledgeSchema | None = None
-
-    def inspect_schema(self) -> KnowledgeSchema:
-        return self.validate_runtime_schema()
 
     def validate_runtime_schema(self) -> KnowledgeSchema:
         with open_read_only_database(self._path) as connection:
@@ -130,12 +154,8 @@ class SQLiteKnowledgeRepository:
             rows = connection.execute(query, query_parameters).fetchall()
 
         representative_evidence: list[EvidenceItem] = []
-        seen_customers: set[str] = set()
         for row in rows:
             customer = str(row["_customer_name"])
-            if customer in seen_customers:
-                continue
-            seen_customers.add(customer)
             content = json.dumps(
                 {
                     "customer": customer,
@@ -151,11 +171,11 @@ class SQLiteKnowledgeRepository:
             )[:MAX_STRUCTURED_EVIDENCE_CHARS]
             hit = self._to_search_hit(row, schema)
             representative_evidence.append(EvidenceItem(**hit.model_dump(), content=content))
-            if len(representative_evidence) >= request.limit:
-                break
         return representative_evidence
 
     def _require_schema(self, connection: sqlite3.Connection) -> KnowledgeSchema:
+        # The database is immutable for this repository's lifetime, so successful schema validation
+        # cannot become stale and needs no invalidation path.
         if self._validated_schema is None:
             self._validated_schema = validate_knowledge_schema(connection)
         return self._validated_schema
@@ -170,7 +190,7 @@ class SQLiteKnowledgeRepository:
             raise ValueError("search query does not contain any FTS-compatible tokens")
 
         filter_clauses: list[str] = []
-        filter_parameters: list[Any] = []
+        filter_parameters: list[SQLParameter] = []
         if request.filters.artifact_type:
             filter_clauses.append("a.artifact_type = ?")
             filter_parameters.append(request.filters.artifact_type)
@@ -190,7 +210,7 @@ class SQLiteKnowledgeRepository:
     def _to_search_hit(row: sqlite3.Row, schema: KnowledgeSchema) -> SearchHit:
         content = str(row["content_text"] or "")
         raw_metadata = row["metadata_json"]
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, JsonValue] = {}
         if raw_metadata:
             try:
                 parsed = json.loads(str(raw_metadata))
@@ -202,7 +222,7 @@ class SQLiteKnowledgeRepository:
                 raise ValueError(
                     f"metadata_json must be an object for artifact {row['artifact_id']}"
                 )
-            metadata = parsed
+            metadata = cast(dict[str, JsonValue], parsed)
 
         keys = set(row.keys())
         raw_score = row["_retrieval_score"] if "_retrieval_score" in keys else None

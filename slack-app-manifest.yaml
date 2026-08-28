@@ -1,0 +1,29 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
+
+display_information:
+  name: QA Agent
+  description: Answers Slack questions from an internal knowledge base.
+  background_color: "#1D2241"
+
+features:
+  agent_view:
+    agent_description: Mention this agent in an invited channel to search the knowledge base and receive an answer with source artifact IDs.
+  bot_user:
+    display_name: QA Agent
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - chat:write
+      - groups:history
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

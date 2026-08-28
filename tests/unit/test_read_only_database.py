@@ -13,7 +13,8 @@ def test_knowledge_database_rejects_writes(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
 
-    read_only = open_read_only_database(path)
-    with pytest.raises(sqlite3.OperationalError):
+    with open_read_only_database(path) as read_only, pytest.raises(sqlite3.OperationalError):
         read_only.execute("INSERT INTO artifacts VALUES ('1', 'title', 'body')")
-    read_only.close()
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        read_only.execute("SELECT 1")

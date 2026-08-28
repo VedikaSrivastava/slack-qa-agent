@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 from pathlib import Path
+
+from knowledge_assistant.retrieval.database import open_read_only_database
 
 DEFAULT_PATH = Path("data/synthetic_startup.sqlite")
 
@@ -13,14 +14,10 @@ def inspect_database(path: Path) -> None:
     resolved = path.resolve()
     if not resolved.is_file():
         raise FileNotFoundError(
-            f"Database not found at {resolved}. Download synthetic_startup.sqlite first."
+            f"Database not found at {resolved}. Restore the included database or pass --path."
         )
 
-    connection = sqlite3.connect(
-        f"file:{resolved.as_posix()}?mode=ro&immutable=1",
-        uri=True,
-    )
-    try:
+    with open_read_only_database(resolved) as connection:
         tables = connection.execute(
             """
             SELECT name, sql
@@ -44,8 +41,6 @@ def inspect_database(path: Path) -> None:
             if foreign_keys:
                 print(f"foreign_keys={foreign_keys}")
             print()
-    finally:
-        connection.close()
 
 
 def main() -> None:

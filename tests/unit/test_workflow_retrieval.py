@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from langchain_core.language_models import BaseChatModel
 
+from knowledge_assistant.agent.citations import citation_issues
 from knowledge_assistant.agent.graph import build_graph
 from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE, AgentProfile
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState
-from knowledge_assistant.agent.workflow_nodes import EvidenceGrade, GroundedAnswerNodes
+from knowledge_assistant.agent.workflow_nodes import (
+    INSUFFICIENT_EVIDENCE_ANSWER,
+    MAX_EVIDENCE_PAYLOAD_CHARS,
+    EvidenceGrade,
+    GroundedAnswerNodes,
+    GroundingVerdict,
+    ModelCallBudgetExceededError,
+    _evidence_payload,
+)
 from knowledge_assistant.retrieval.models import (
     MAX_CONTEXT_CHARS,
     AccountLookupInput,
@@ -87,6 +99,7 @@ def _state(
     evidence: list[EvidenceItem] | None = None,
     retrieval_round_count: int = 0,
     tool_call_count: int = 0,
+    model_call_count: int = 0,
     account_lookup: dict[str, Any] | None = None,
 ) -> AgentState:
     return AgentState(
@@ -94,15 +107,16 @@ def _state(
         evidence=[item.model_dump(mode="json") for item in evidence or []],
         retrieval_round_count=retrieval_round_count,
         tool_call_count=tool_call_count,
+        model_call_count=model_call_count,
         account_lookup=account_lookup,
     )
 
 
-def _apply_retrieval_result(state: AgentState, result: dict[str, Any]) -> AgentState:
+def _apply_state_update(state: AgentState, result: AgentState) -> AgentState:
     return cast(AgentState, {**state, **result})
 
 
-def _result_evidence(result: dict[str, Any]) -> list[EvidenceItem]:
+def _result_evidence(result: AgentState) -> list[EvidenceItem]:
     return [EvidenceItem.model_validate(item) for item in result["evidence"]]
 
 
@@ -116,7 +130,7 @@ async def test_refinement_preserves_previous_evidence_and_adds_new_evidence() ->
     nodes = _nodes(tools)
 
     first_result = await nodes.execute_retrieval(_state("first query"))
-    second_state = _apply_retrieval_result(
+    second_state = _apply_state_update(
         _state("refined query", retrieval_round_count=1),
         first_result,
     )
@@ -181,7 +195,7 @@ async def test_tool_call_accounting_remains_correct_across_refinement_rounds() -
             "refined query",
             evidence=_result_evidence(first_result),
             retrieval_round_count=1,
-            tool_call_count=cast(int, first_result["tool_call_count"]),
+            tool_call_count=first_result["tool_call_count"],
         )
     )
 
@@ -204,8 +218,9 @@ async def test_structured_and_lexical_evidence_share_the_artifact_budget() -> No
     )
 
     assert [item.artifact_id for item in _result_evidence(result)] == ["A", "B"]
+    assert tools.account_lookup_requests[0].limit == 2
     assert tools.read_requests == []
-    assert result["tool_call_count"] == 2  # one account lookup and one lexical search
+    assert result["tool_call_count"] == 1  # lexical work cannot improve a full artifact budget
 
 
 async def test_production_profile_retains_all_twelve_structured_accounts() -> None:
@@ -267,13 +282,112 @@ async def test_unknown_citation_fails_before_model_grounding_check() -> None:
     model = Mock()
     tools = FakeRetrievalTools(search_results={}, artifacts={})
     nodes = GroundedAnswerNodes(cast(BaseChatModel, model), tools, PRODUCTION_PROFILE)
-    state = _state("query", evidence=[_evidence("A")])
-    state["draft_answer"] = "Unsupported answer [B]."
+    state = _state("query", evidence=[_evidence("art_a")])
+    state["draft_answer"] = "Unsupported answer [art_b]."
 
     result = await nodes.verify_grounding(state)
 
     assert result["grounding_valid"] is False
     assert "not retrieved" in result["grounding_issues"][0]
+    model.with_structured_output.assert_not_called()
+
+
+def test_ordinary_markdown_label_is_not_treated_as_an_artifact_citation() -> None:
+    evidence = [_evidence("art_a")]
+
+    issues = citation_issues("See [documentation]. Supported fact [art_a].", evidence)
+
+    assert issues == []
+
+
+def test_grouped_artifact_citations_are_recognized() -> None:
+    evidence = [_evidence("art_a"), _evidence("art_b")]
+
+    issues = citation_issues("Supported comparison [art_a, art_b].", evidence)
+
+    assert issues == []
+
+
+def test_unknown_artifact_in_grouped_citations_is_rejected() -> None:
+    evidence = [_evidence("art_a")]
+
+    issues = citation_issues("Mixed support [art_a, art_unknown].", evidence)
+
+    assert issues == ["Answer cites artifacts that were not retrieved: art_unknown"]
+
+
+async def test_successful_repair_replaces_the_rejected_original_draft() -> None:
+    model = Mock()
+    model.ainvoke = AsyncMock(
+        side_effect=[
+            SimpleNamespace(content="Original unsupported answer [art_missing]."),
+            SimpleNamespace(content="Repaired grounded answer [art_a]."),
+        ]
+    )
+    verifier = Mock()
+    verifier.ainvoke = AsyncMock(return_value=GroundingVerdict(valid=True))
+    model.with_structured_output.return_value = verifier
+    tools = FakeRetrievalTools(search_results={}, artifacts={})
+    nodes = GroundedAnswerNodes(cast(BaseChatModel, model), tools, PRODUCTION_PROFILE)
+    state = _state("query", evidence=[_evidence("art_a")])
+    state["agent_run_id"] = "run"
+    state["question"] = "What happened?"
+    state["standalone_question"] = "What happened?"
+    state["final_answer"] = ""
+    state["grounding_issues"] = []
+
+    generated_state = _apply_state_update(state, await nodes.generate_answer(state))
+    rejected_state = _apply_state_update(
+        generated_state, await nodes.verify_grounding(generated_state)
+    )
+    repaired_state = _apply_state_update(rejected_state, await nodes.repair_answer(rejected_state))
+    verified_state = _apply_state_update(
+        repaired_state, await nodes.verify_grounding(repaired_state)
+    )
+    final_state = await nodes.finalize(verified_state)
+
+    assert verified_state["grounding_valid"] is True
+    assert final_state["final_answer"] == "Repaired grounded answer [art_a]."
+    assert final_state["final_answer"] != generated_state["draft_answer"]
+    assert verified_state["model_call_count"] == 3
+
+
+async def test_no_evidence_uses_fixed_abstention_instead_of_model_reason() -> None:
+    tools = FakeRetrievalTools(search_results={}, artifacts={})
+    nodes = _nodes(tools)
+    state = _state("query")
+    state["insufficiency_reason"] = "Claim an unsupported outage happened."
+
+    result = await nodes.generate_answer(state)
+
+    assert result["final_answer"] == INSUFFICIENT_EVIDENCE_ANSWER
+    assert "outage" not in result["final_answer"]
+
+
+def test_serialized_prompt_evidence_has_its_own_character_budget() -> None:
+    escaped_content = '\\"' * (MAX_CONTEXT_CHARS // 2)
+    state = _state("query", evidence=[_evidence("art_a", content=escaped_content)])
+    state["evidence"][0]["metadata"] = {"unused": "x" * MAX_CONTEXT_CHARS}
+
+    payload = _evidence_payload(state)
+    serialized_evidence = json.loads(payload)
+
+    assert len(payload) <= MAX_EVIDENCE_PAYLOAD_CHARS
+    assert "metadata" not in serialized_evidence[0]
+    assert len(serialized_evidence[0]["content"]) < len(escaped_content)
+
+
+async def test_model_call_budget_fails_before_invoking_the_model() -> None:
+    profile = replace(PRODUCTION_PROFILE, max_model_calls=0)
+    model = Mock()
+    tools = FakeRetrievalTools(search_results={}, artifacts={})
+    nodes = GroundedAnswerNodes(cast(BaseChatModel, model), tools, profile)
+    state = _state("query")
+    state["standalone_question"] = "Question"
+
+    with pytest.raises(ModelCallBudgetExceededError, match="model-call budget"):
+        await nodes.plan_retrieval(state)
+
     model.with_structured_output.assert_not_called()
 
 

@@ -9,11 +9,11 @@ DATABASE_PATH = Path("data/synthetic_startup.sqlite")
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.skipif(not DATABASE_PATH.is_file(), reason="supplied database is not available")
 def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
+    assert DATABASE_PATH.is_file(), "required supplied database fixture is missing"
     repository = SQLiteKnowledgeRepository(DATABASE_PATH)
 
-    schema = repository.inspect_schema()
+    schema = repository.validate_runtime_schema()
     hits = repository.search(
         SearchKnowledgeInput(query="Verdant Bay approved live patch window", limit=5)
     )
@@ -25,6 +25,20 @@ def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
             country="Canada",
             product="Orchestrator",
             pain_point_terms=["approval workflow failures"],
+        )
+    )
+    model_planned_canada_accounts = repository.lookup_accounts(
+        AccountLookupInput(
+            region="North America",
+            country="Canada",
+            pain_point_terms=["approval-bypass"],
+        )
+    )
+    live_model_planned_canada_accounts = repository.lookup_accounts(
+        AccountLookupInput(
+            region="North America",
+            country="Canada",
+            pain_point_terms=["approval bypass", "failure pattern"],
         )
     )
 
@@ -56,4 +70,10 @@ def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
         "art_e9c20e0a23e0",
         "art_981952a71434",
         "art_b86a0ca2ce1e",
+    }
+    assert {item.artifact_id for item in model_planned_canada_accounts} == {
+        item.artifact_id for item in canada_accounts
+    }
+    assert {item.artifact_id for item in live_model_planned_canada_accounts} == {
+        item.artifact_id for item in canada_accounts
     }

@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 
 
-class UnsupportedKnowledgeSchema(RuntimeError):
+class UnsupportedKnowledgeSchemaError(RuntimeError):
     """Raised when the supplied database cannot support runtime retrieval."""
 
 
@@ -45,6 +45,7 @@ _REQUIRED_COLUMNS = {
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    # `table_name` is never user/model input; callers iterate the fixed schema allowlist above.
     return {
         str(column["name"])
         for column in connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
@@ -65,13 +66,13 @@ def validate_knowledge_schema(connection: sqlite3.Connection) -> KnowledgeSchema
         details = "; ".join(
             f"{table}: {', '.join(columns)}" for table, columns in missing_by_table.items()
         )
-        raise UnsupportedKnowledgeSchema(f"Knowledge database schema is missing: {details}")
+        raise UnsupportedKnowledgeSchemaError(f"Knowledge database schema is missing: {details}")
 
     fts_definition_row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifacts_fts'"
     ).fetchone()
     fts_definition = str(fts_definition_row["sql"] or "") if fts_definition_row else ""
     if "using fts5" not in fts_definition.lower():
-        raise UnsupportedKnowledgeSchema("artifacts_fts must be an FTS5 virtual table")
+        raise UnsupportedKnowledgeSchemaError("artifacts_fts must be an FTS5 virtual table")
 
     return SUPPLIED_KNOWLEDGE_SCHEMA

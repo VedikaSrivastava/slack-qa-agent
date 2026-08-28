@@ -1,258 +1,226 @@
-# Slack Q&A Agent
+# QA Agent
 
-A production-minded Slack Q&A agent grounded in an immutable SQLite knowledge base. It uses
-FastAPI and Slack Bolt for verified ingress, Inngest for durable background work, LangGraph for a
-bounded retrieval workflow, PostgreSQL for application run state and conversation checkpoints,
-and optional LangSmith tracing plus versioned offline experiments.
-
-## Architecture
-
-```text
-Slack Events API
-      |
-      v
-FastAPI + Slack Bolt -- deduplicate/create run --> PostgreSQL
-      |
-      +-- deterministic event ID --> Inngest
-                                      |
-                                      +-- mark running
-                                      +-- create/reuse Slack placeholder
-                                      +-- run QuestionProcessor (one durable step)
-                                      |       |
-                                      |       v
-                                      |   bounded LangGraph
-                                      |       |
-                                      |       +-- typed search/read tools
-                                      |       +-- read-only SQLite
-                                      |       +-- Postgres checkpoints
-                                      +-- update the placeholder
-                                      +-- persist result and sources
-```
-
-The `QuestionProcessor` is transport-independent. Slack/Inngest, the CLI, and the evaluation runner
-all invoke the same implementation. LangGraph owns question resolution, retrieval planning,
-evidence grading, one optional refinement, generation, grounding verification, and one repair.
-Inngest owns queueing, retries, per-thread ordering, a shared concurrency cap, and Slack side-effect
-sequencing.
+A Slack Q&A bot backed by the included read-only SQLite knowledge base. Docker Compose is the recommended reviewer path.
 
 ## Prerequisites
 
-The recommended local path needs only Git and Docker Desktop. Python, uv, PostgreSQL, SQLite CLI,
-Make, and the Inngest CLI are not required. Docker is a reproducible launcher, not an architectural
-dependency: it runs the app, local PostgreSQL, and the pinned Inngest dev server. The HTTPS tunnel
-used by Slack is a separate process. A deployed environment can use managed PostgreSQL and hosted
-Inngest without Docker.
+- Git
+- Docker with Compose v2
+- an OpenAI API key with access to `gpt-4.1-mini`
+- a Slack workspace where you can create an app and use the Agent feature
+- [ngrok](https://ngrok.com/download) and a free ngrok account
 
-The supplied knowledge database is intentionally not committed. Place it at:
+Python, PostgreSQL, the Slack CLI, and the Inngest CLI are not required on the host. The runtime uses `data/synthetic_startup.sqlite` and mounts it read-only.
 
-```text
-data/synthetic_startup.sqlite
+## 1. Create and install the Slack app
+
+Use [`slack-app-manifest.yaml`](slack-app-manifest.yaml) as the bootstrap manifest:
+
+1. Open [Slack's app dashboard](https://api.slack.com/apps) and select **Create New App**.
+2. Select **From an app manifest**, choose the workspace, select **YAML**, and paste the file.
+3. Create the app, open **OAuth & Permissions**, and select **Install to Workspace**.
+4. Copy the **Bot User OAuth Token** (`xoxb-...`).
+5. Open **Basic Information > App Credentials** and copy the **Signing Secret**.
+
+The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 5. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
+
+## 2. Create `.env.local`
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env.local
 ```
 
-The application opens this file with SQLite `mode=ro`, `immutable=1`, and `PRAGMA query_only=ON`.
-Docker mounts it read-only.
-
-## Start with Docker
+macOS or Linux:
 
 ```bash
 cp .env.example .env.local
-docker compose --env-file .env.local up --build
 ```
 
-On Windows PowerShell, use `Copy-Item .env.example .env.local` for the first command. The file asks
-for the OpenAI key and two Slack credentials. LangSmith tracing is off by default; add a LangSmith
-key and set `LANGSMITH_TRACING=true` when you want runtime traces. Local database, path, project,
-and Inngest settings are fixed in Compose or code. Each process validates only the credentials it
-uses and fails immediately when one is missing or blank.
-`.env.local` is ignored by Git and excluded from Docker build contexts. Model names and action
-budgets are code-defined in reviewed `AgentProfile` values, so environment variables cannot silently
-switch either one. The production profile is currently the provisional `balanced-gpt-4.1-mini`;
-run the saved experiments before treating that choice as final.
+Set the required credentials:
 
-Services:
+```dotenv
+OPENAI_API_KEY=...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
 
-- Liveness: <http://localhost:8000/healthz>
-- Readiness: <http://localhost:8000/readyz>
-- Slack Events API: `http://localhost:8000/slack/events` (expose this with an HTTPS tunnel)
-- Inngest UI: <http://localhost:8288>
-- PostgreSQL: `localhost:5432` for local inspection only
+# Default: clear unmentioned follow-ups in an agent-owned thread may be handled.
+SLACK_ROUTING_POLICY=agent_owned_thread_follow_ups
 
-`/healthz` reports process liveness without secrets. `/readyz` verifies the knowledge file,
-PostgreSQL connectivity, and the validated Slack/agent/Inngest configuration. Slack is the only
-product interface. Inngest always registers and executes the Slack question workflow.
-
-The one-shot `migrate` service runs both `alembic upgrade head` and LangGraph's supported Postgres
-checkpoint setup. Alembic owns only `agent_runs` and `run_sources`; LangGraph owns its
-checkpoint tables.
-
-## Developer-only direct agent check
-
-```bash
-docker compose --env-file .env.local run --rm app \
-  python -m knowledge_assistant.cli ask \
-  "For Verdant Bay, what is the approved live patch window?"
+# Optional; LangSmith is not required for local use.
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=
 ```
 
-This command is a diagnostic for retrieval and agent development, not a product fallback and not a
-substitute for the Slack integration. It requires only OpenAI and PostgreSQL, not Slack or LangSmith
-credentials. To reuse multi-turn state across CLI calls, pass the same `--conversation-id` value.
-Slack derives this value from team ID, channel ID, and the root thread timestamp, so different
-threads are isolated and follow-ups in one thread share state.
+Set `SLACK_ROUTING_POLICY=explicit_mentions_only` to require `@QA Agent` on every turn.
 
-## Evaluations
+## 3. Start the stack
 
-The committed `full` suite is the seven-question, human-curated assignment benchmark. It includes
-reference answers, exact facts/entities/dates/commands/customer sets, verified source IDs, and
-action budgets. A stable digest and the `official-v1` LangSmith dataset tag tie every experiment to
-the exact gold data used. Synthetic questions are never written into this dataset.
-
-The local `run` command requires OpenAI but does not require LangSmith. The `sync`, `experiment`,
-and `augment` commands require `LANGSMITH_API_KEY` and fail when it is absent. Experiment execution
-also fails if any evaluated run errors instead of silently producing a successful command exit.
-
-Run the one-case smoke suite and save its local result:
+If an earlier local checkout created the disposable PostgreSQL volume, reset it once:
 
 ```bash
-docker compose --env-file .env.local run --rm app \
-  python -m knowledge_assistant.evals run \
-  --suite smoke \
-  --profile balanced-gpt-4.1-mini \
-  --output /app/evals/results/smoke-balanced-gpt-4.1-mini.json
+docker compose --env-file .env.local down --volumes
 ```
 
-Synchronize the versioned official dataset, then run and save a LangSmith experiment:
+Build and start:
 
 ```bash
-docker compose --env-file .env.local run --rm app python -m knowledge_assistant.evals sync
-docker compose --env-file .env.local run --rm app \
-  python -m knowledge_assistant.evals experiment \
-  --profile balanced-gpt-4.1-mini \
-  --protocol screening \
-  --output /app/evals/results/langsmith-balanced-gpt-4.1-mini-screening.json
+docker compose --env-file .env.local up -d --build
 ```
 
-Repeat the experiment with `balanced-gpt-5-mini`, `balanced-gpt-5.6-luna`,
-`lean-gpt-4.1-mini`, and `wide-gpt-4.1-mini`. These isolate model choice from retrieval/action
-budget changes. Every run records deterministic pass/fail, semantic reference correctness from the
-code-defined `gpt-5.6-terra` evaluator, source recall, action-budget compliance, latency, tokens,
-estimated cost, errors, the complete profile, and trace links. Unknown profile names fail; there is
-no model, evaluator, or budget fallback.
-
-Use `screening` for one repetition across every profile. Run `confirmation` only for the top two;
-it performs three repetitions per example to expose variance. Both protocols keep concurrency at
-one so rate limits and latency comparisons remain controlled, and the protocol is saved in the
-experiment metadata and local summary.
-
-After the official baseline is stable, use a separate LangSmith augmentation-candidate dataset for
-paraphrases and multi-turn variants. Curate insufficient-evidence cases independently rather than
-deriving them from answerable gold seeds. Review and label all examples before promoting them into a
-distinct robustness suite. Keeping generated examples separate avoids
-optimizing against synthetic labels or contaminating the seven-question benchmark.
-
-Generate two bounded candidates per official seed (14 total) with the code-defined generator:
+Later starts can omit `--build`:
 
 ```bash
-docker compose --env-file .env.local run --rm app \
-  python -m knowledge_assistant.evals augment --per-case 2
+docker compose --env-file .env.local up -d
 ```
 
-This command writes only to `slack-qa-agent-augmentation-candidates`, tags every example as
-`review_status=candidate`, traces the generation, and raises if the model returns the wrong count.
-It never edits or evaluates against `slack-qa-agent-official`; promotion requires human review.
-
-## Slack setup
-
-Create a Slack app with a bot token and signing secret, subscribe the Events API to
-`https://<public-host>/slack/events`, and subscribe to `app_mention`. Grant the bot the minimum scopes
-needed to read mentions and post/update thread messages (typically `app_mentions:read` and
-`chat:write`). Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`, then restart the app.
-
-For local testing, run the Docker stack and expose port 8000 with an HTTPS tunnel such as ngrok or
-Cloudflare Tunnel. Put the resulting HTTPS `/slack/events` URL in the Slack app's Event Subscriptions
-page. The desktop Slack client is optional; Slack itself remains hosted and is not run in Docker.
-
-Slack Bolt validates request signatures and timestamp freshness. Bot messages and irrelevant
-subtypes are ignored. The HTTP handler creates an idempotent run keyed by Slack `event_id`, sends a
-deterministically identified Inngest event, and returns without invoking a model. Retries reuse the
-same run and Slack placeholder.
-
-## Configuration
-
-`.env.local` contains only external credentials and the explicit tracing switch:
-
-- `OPENAI_API_KEY`: model access
-- `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`: Slack transport credentials
-- `LANGSMITH_TRACING`: `false` by default; set to `true` only when runtime tracing is wanted
-- `LANGSMITH_API_KEY`: optional for the Slack runtime and required for LangSmith commands
-
-The local PostgreSQL URL and explicitly local password, immutable SQLite path, Inngest dev URL,
-LangSmith project name, log level, and development environment are fixed in `compose.yaml`.
-Application, prompt, and retrieval versions are code constants because they describe the checked-in
-implementation rather than deployment configuration. Production deployments should inject their
-managed database URL and Inngest credentials through their secret manager rather than reuse the
-local Compose values.
-
-Never put production credentials in source control or bake them into the image.
-
-## Developer commands
-
-Docker equivalents work on Windows without Make:
+Check the services:
 
 ```bash
-docker compose --env-file .env.local up --build
-docker compose --env-file .env.local down
-docker compose --env-file .env.local logs --follow app inngest postgres
-docker compose --env-file .env.local run --rm migrate
-docker compose --env-file .env.local run --rm app pytest
+docker compose --env-file .env.local ps
 ```
 
-For a local Python development environment:
+The one-shot `migrate` service should finish with `Exited (0)`. The remaining services should keep running. Verify:
+
+- <http://localhost:8000/healthz> returns `{"status":"ok"}`;
+- <http://localhost:8000/readyz> returns HTTP `200` and `"status":"ready"`;
+- <http://localhost:8288> opens the Inngest development UI.
+
+Follow logs with:
 
 ```bash
-uv sync --all-groups
+docker compose --env-file .env.local logs --follow app slack-ingress migrate inngest postgres
+```
+
+## 4. Start the HTTPS tunnel
+
+Configure ngrok (only once) if needed:
+
+```bash
+ngrok config add-authtoken <your-ngrok-authtoken>
+```
+
+Start the tunnel in a second terminal:
+
+```bash
+ngrok http 8001
+```
+
+Copy the HTTPS forwarding origin. Port `8001` exposes only `POST /slack/events`; do not tunnel port
+`8000`. If the ngrok URL changes, regenerate and reapply the manifest in the next step.
+
+## 5. Generate and apply the final manifest
+
+Keep Compose and ngrok running. Generate the complete manifest with the HTTPS origin from ngrok.
+
+Windows PowerShell:
+
+```powershell
+$publicBaseUrl = "https://<public-tunnel-host>"
+$generatedManifest = docker compose --env-file .env.local exec -T app `
+  python -m knowledge_assistant.integrations.slack.manifest $publicBaseUrl
+$generatedManifest | Set-Clipboard
+```
+
+macOS or Linux:
+
+```bash
+public_base_url="https://<public-tunnel-host>"
+docker compose --env-file .env.local exec -T app \
+  python -m knowledge_assistant.integrations.slack.manifest "$public_base_url" \
+  > slack-app-manifest.generated.yaml
+```
+
+Then:
+
+1. Open **App Manifest** in the Slack app dashboard and select **YAML**.
+2. Replace the bootstrap manifest with the generated output and save it.
+3. Wait for Slack to verify `https://<public-tunnel-host>/slack/events`.
+4. Confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and
+   `message.groups`.
+5. Complete any reinstall or reauthorization prompt.
+
+## 6. Invite and test QA Agent
+
+Invite the app in each public or private channel where it should answer:
+
+```text
+/invite @QA Agent
+```
+
+Ask a question:
+
+```text
+@QA Agent For Verdant Bay, what is the approved live patch window?
+```
+
+See the [thread/session contract](docs/thread-and-session-model.md) for interaction behavior.
+
+## Troubleshooting
+
+If Slack cannot verify the Request URL:
+
+- confirm the URL is HTTPS and ends with `/slack/events`;
+- confirm <http://localhost:8000/healthz> works;
+- confirm ngrok still forwards to port `8001`;
+- regenerate the final manifest after a tunnel URL change;
+- inspect `docker compose --env-file .env.local logs app slack-ingress migrate inngest`.
+
+If mentions do not reach QA Agent:
+
+- confirm the generated manifest, not the bootstrap, is currently applied;
+- confirm `app_mention` is subscribed;
+- reinstall after any scope or Agent-feature change;
+- run `/invite @QA Agent` in the channel;
+- restart Compose after changing `.env.local`.
+
+If unmentioned follow-ups do not work:
+
+- confirm `SLACK_ROUTING_POLICY=agent_owned_thread_follow_ups`;
+- confirm `message.channels` is subscribed, plus `message.groups` and `groups:history` for private
+  channels;
+- begin the thread with an explicit mention and wait for its answer;
+- inspect **Route Slack turn** in the Inngest UI; ambiguous messages intentionally stay silent.
+
+If progress or Stop is missing:
+
+- confirm the Slack Agent feature is enabled and the app has `assistant:write`;
+- confirm `agent_session_stopped` is subscribed;
+- inspect logs for `slack_stream_open_failed`; a stream-open failure still permits one final answer.
+
+## Run checks
+
+With [uv](https://docs.astral.sh/uv/) installed:
+
+```bash
+uv sync --frozen --all-groups
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
 uv run pytest
 ```
 
-Inspect the supplied knowledge database before changing retrieval:
+Or use Docker:
 
 ```bash
-uv run python scripts/inspect_database.py
+docker build --target validation .
 ```
 
-## Reliability and security controls
+## Stop or reset
 
-- Slack `event_id` is unique in PostgreSQL and reused as the Inngest idempotency key.
-- Inngest serializes work per `conversation_id` and caps shared model concurrency.
-- Completed results are reusable; placeholder and response timestamps prevent duplicate messages.
-- Knowledge access has no write-capable connection and no arbitrary SQL tool.
-- Search values are parameterized; schema-derived identifiers are allowlisted and quoted.
-- Search count, artifact batch size, evidence characters, retrieval rounds, and graph recursion are
-  hard bounded.
-- Retrieved text is explicitly treated as untrusted data, not instructions.
-- No answer is generated without evidence; missing evidence produces a clear insufficiency response.
-- Structured logs redact secret-like fields and carry request/run/conversation identifiers.
-- Run records retain latency, action counts, token usage when returned by the model, sources, safe
-  error codes, and version metadata.
+```bash
+# Stop while keeping PostgreSQL data.
+docker compose --env-file .env.local down
 
-## Observability
+# Remove the stack and local PostgreSQL data.
+docker compose --env-file .env.local down --volumes
+```
 
-JSON logs cover HTTP correlation, retrieval duration/counts, Slack enqueue/delivery, and durable run
-completion. PostgreSQL provides the application-level run ledger. The Inngest UI shows queue and
-step retries. LangSmith traces carry the run ID, conversation ID, prompt/retrieval versions, model,
-agent profile, environment, and app version. Offline experiment traces additionally carry the gold
-dataset version and digest.
+## Documentation
 
-## Current limitations
-
-- The supplied database has 250 artifacts and a standalone FTS5 index. Startup validates the exact
-  documented schema and fails if it or FTS5 is unavailable. Lexical artifact retrieval is
-  complemented by a parameterized relational account lookup for bounded cross-account questions;
-  no arbitrary SQL is model-accessible.
-- The official benchmark is intentionally only seven cases. Broader robustness coverage should be
-  added as a separately reviewed suite after baseline experiments, not mixed into the gold set.
-- Docker integration, PostgreSQL migrations, and live Inngest/Slack/OpenAI behavior require Docker
-  and credentials; unit tests do not claim to validate those external systems.
-- Retrieval is deliberately lexical until measured evaluation results justify hybrid/vector search.
+- [Architecture and request lifecycle](docs/architecture.md)
+- [Slack thread and Agent Session model](docs/thread-and-session-model.md)
+- [Engineering decisions and tradeoffs](docs/decisions-and-tradeoffs.md)
+- [Implementation journal](docs/implementation-journal.md)
+- [Evaluations and LangSmith](docs/evaluations.md)

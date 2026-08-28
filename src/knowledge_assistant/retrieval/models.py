@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 MAX_SEARCH_LIMIT = 10
 MAX_ARTIFACT_BATCH = 8
 MAX_CONTEXT_CHARS = 24_000
 MAX_ACCOUNT_RESULTS = 16
+
+type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 
 
 class SearchFilters(BaseModel):
@@ -67,13 +67,13 @@ class AccountLookupInput(BaseModel):
 
 
 class SearchHit(BaseModel):
-    artifact_id: str
-    title: str
-    artifact_type: str | None = None
-    snippet: str
+    artifact_id: str = Field(min_length=1, max_length=512)
+    title: str = Field(min_length=1, max_length=1_000)
+    artifact_type: str | None = Field(default=None, max_length=128)
+    snippet: str = Field(max_length=500)
     score: float | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class EvidenceItem(SearchHit):
-    content: str
+    content: str = Field(max_length=MAX_CONTEXT_CHARS)

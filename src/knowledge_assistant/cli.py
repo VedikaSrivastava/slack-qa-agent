@@ -15,11 +15,11 @@ from knowledge_assistant.config import get_agent_runtime_settings
 async def ask(question: str, conversation_id: str | None = None) -> int:
     settings = get_agent_runtime_settings()
     run_id = str(uuid.uuid4())
-    thread_id = conversation_id or f"cli:{run_id}"
+    resolved_conversation_id = conversation_id or f"cli:{run_id}"
     async with create_question_processor(settings, PRODUCTION_PROFILE) as processor:
         response = await processor.answer(
             question=question,
-            conversation_id=thread_id,
+            conversation_id=resolved_conversation_id,
             agent_run_id=run_id,
         )
     print(response.answer)
@@ -28,7 +28,8 @@ async def ask(question: str, conversation_id: str | None = None) -> int:
         for source in response.sources:
             print(f"- {source.title} ({source.artifact_id})")
     print(
-        f"\nActions: {response.tool_call_count} tool calls, "
+        f"\nActions: {response.model_call_count} model calls, "
+        f"{response.tool_call_count} tool calls, "
         f"{response.retrieval_round_count} retrieval rounds"
     )
     return 0

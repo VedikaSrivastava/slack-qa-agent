@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 EVALUATOR_MODEL_NAME = "gpt-5.6-terra"
+OPENAI_REQUEST_TIMEOUT_SECONDS = 60.0
+OPENAI_MAX_RETRIES = 0
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,7 @@ class AgentProfile:
     max_artifacts: int
     max_retrieval_rounds: int
     max_tool_calls: int
+    max_model_calls: int
 
 
 BALANCED_GPT_4_1_MINI = AgentProfile(
@@ -32,6 +35,7 @@ BALANCED_GPT_4_1_MINI = AgentProfile(
     max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
+    max_model_calls=8,
 )
 BALANCED_GPT_5_MINI = AgentProfile(
     name="balanced-gpt-5-mini",
@@ -44,6 +48,7 @@ BALANCED_GPT_5_MINI = AgentProfile(
     max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
+    max_model_calls=8,
 )
 BALANCED_GPT_5_6_LUNA = AgentProfile(
     name="balanced-gpt-5.6-luna",
@@ -56,6 +61,7 @@ BALANCED_GPT_5_6_LUNA = AgentProfile(
     max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
+    max_model_calls=8,
 )
 LEAN_GPT_4_1_MINI = AgentProfile(
     name="lean-gpt-4.1-mini",
@@ -68,6 +74,7 @@ LEAN_GPT_4_1_MINI = AgentProfile(
     max_artifacts=6,
     max_retrieval_rounds=1,
     max_tool_calls=4,
+    max_model_calls=7,
 )
 WIDE_GPT_4_1_MINI = AgentProfile(
     name="wide-gpt-4.1-mini",
@@ -80,6 +87,7 @@ WIDE_GPT_4_1_MINI = AgentProfile(
     max_artifacts=16,
     max_retrieval_rounds=2,
     max_tool_calls=8,
+    max_model_calls=8,
 )
 
 PRODUCTION_PROFILE = BALANCED_GPT_4_1_MINI

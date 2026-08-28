@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 
-def open_read_only_database(path: Path) -> sqlite3.Connection:
-    """Open the supplied knowledge database in immutable read-only mode."""
+@contextmanager
+def open_read_only_database(path: Path) -> Iterator[sqlite3.Connection]:
+    """Yield an immutable read-only connection and always close it afterward."""
 
     resolved = path.resolve()
     connection = sqlite3.connect(
-        f"file:{resolved.as_posix()}?mode=ro&immutable=1",
+        f"{resolved.as_uri()}?mode=ro&immutable=1",
         uri=True,
-        check_same_thread=False,
     )
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only = ON")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        yield connection
+    finally:
+        connection.close()
