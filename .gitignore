@@ -31,7 +31,6 @@ data/*.sqlite-*
 .DS_Store
 Thumbs.db
 
-# Recordings and generated reports
-recordings/
-evals/reports/
+# Recordings
 slack-app-manifest.generated.yaml
+

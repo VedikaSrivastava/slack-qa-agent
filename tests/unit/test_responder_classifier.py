@@ -10,6 +10,7 @@ from knowledge_assistant.integrations.slack.routing import (
     ResponderClassification,
     ResponderClassificationRequest,
     ResponderDecision,
+    ResponderPromptVariant,
     SlackThreadIdentity,
 )
 
@@ -105,3 +106,45 @@ async def test_responder_classifier_keeps_human_aside_silent_with_clarification(
     assert result == ResponderClassification(decision=ResponderDecision.STAY_SILENT)
     system_message = cast(Any, model.structured.messages[0])
     assert "directed to another person" in str(system_message.content)
+
+
+async def test_current_responder_variant_does_not_send_latest_agent_response() -> None:
+    model = FakeChatModel({"decision": "respond"})
+    classifier = StructuredResponderClassifier(cast(BaseChatModel, model))
+
+    await classifier.classify(
+        ResponderClassificationRequest(
+            thread=SlackThreadIdentity(team_id="T1", channel_id="C1", thread_ts="1.0"),
+            user_id="U2",
+            message_text="Why?",
+            last_agent_response="The private answer from the prior agent response.",
+        )
+    )
+
+    human_message = cast(Any, model.structured.messages[1])
+    assert json.loads(str(human_message.content)) == {"message_text": "Why?"}
+
+
+async def test_contextual_responder_variant_uses_latest_agent_response_as_untrusted_data() -> None:
+    model = FakeChatModel({"decision": "respond"})
+    classifier = StructuredResponderClassifier(
+        cast(BaseChatModel, model),
+        prompt_variant=ResponderPromptVariant.LATEST_AGENT_CONTEXT,
+    )
+
+    await classifier.classify(
+        ResponderClassificationRequest(
+            thread=SlackThreadIdentity(team_id="T1", channel_id="C1", thread_ts="1.0"),
+            user_id="U2",
+            message_text="Does that apply to staging?",
+            last_agent_response="The prior answer discussed the production canary.",
+        )
+    )
+
+    system_message = cast(Any, model.structured.messages[0])
+    assert "last_agent_response" in str(system_message.content)
+    human_message = cast(Any, model.structured.messages[1])
+    assert json.loads(str(human_message.content)) == {
+        "last_agent_response": "The prior answer discussed the production canary.",
+        "message_text": "Does that apply to staging?",
+    }

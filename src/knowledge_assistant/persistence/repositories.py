@@ -114,6 +114,7 @@ class SlackTurnRecord:
     user_id: str
     message_ts: str
     thread_ts: str
+    message_text: str
     conversation_id: str
     kind: SlackTurnKind
     status: SlackTurnStatus
@@ -318,6 +319,7 @@ class RunLedger(Protocol):
         user_id: str,
         message_ts: str,
         thread_ts: str,
+        message_text: str,
         kind: SlackTurnKind,
     ) -> SlackTurnEnsureResult: ...
 
@@ -336,6 +338,14 @@ class RunLedger(Protocol):
     ) -> bool: ...
 
     async def get_turn(self, event_id: str) -> SlackTurnRecord | None: ...
+
+    async def get_recent_suppressed_thread_messages(
+        self,
+        *,
+        conversation_id: str,
+        before_message_ts: str,
+        limit: int,
+    ) -> list[str]: ...
 
     async def observe_run(self, run_id: uuid.UUID) -> RunObservation: ...
 
@@ -822,6 +832,7 @@ def _turn_record_from_row(row: Any) -> SlackTurnRecord:
         user_id=row.slack_user_id,
         message_ts=row.slack_message_ts,
         thread_ts=row.slack_thread_ts,
+        message_text=row.message_text,
         conversation_id=row.conversation_id,
         kind=SlackTurnKind(row.kind),
         status=SlackTurnStatus(row.status),
@@ -945,6 +956,7 @@ def _select_turn_columns() -> tuple[Any, ...]:
         SlackTurn.slack_user_id,
         SlackTurn.slack_message_ts,
         SlackTurn.slack_thread_ts,
+        SlackTurn.message_text,
         SlackTurn.conversation_id,
         SlackTurn.kind,
         SlackTurn.status,
@@ -1049,6 +1061,7 @@ class PostgresRunLedger:
         user_id: str,
         message_ts: str,
         thread_ts: str,
+        message_text: str,
         kind: SlackTurnKind,
     ) -> SlackTurnEnsureResult:
         identity = _normalize_slack_turn_identity(
@@ -1070,6 +1083,7 @@ class PostgresRunLedger:
                 slack_message_ts=identity.message_ts,
                 message_ts_value=identity.message_ts_value,
                 slack_thread_ts=identity.thread_ts,
+                message_text=_validate_required_identity(message_text, "Slack message text", 8_000),
                 conversation_id=identity.conversation_id,
                 kind=identity.kind.value,
                 status=SlackTurnStatus.PENDING.value,
@@ -1090,6 +1104,33 @@ class PostgresRunLedger:
                 turn=turn,
                 was_created=inserted_event_id is not None,
             )
+
+    async def get_recent_suppressed_thread_messages(
+        self,
+        *,
+        conversation_id: str,
+        before_message_ts: str,
+        limit: int,
+    ) -> list[str]:
+        normalized_conversation_id = _validate_required_identity(
+            conversation_id, "Conversation ID", 512
+        )
+        if limit < 1 or limit > 6:
+            raise RunTransitionError("Thread context limit must be between 1 and 6")
+        before_value = _parse_slack_timestamp_value(before_message_ts)
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(SlackTurn.message_text)
+                .where(
+                    SlackTurn.conversation_id == normalized_conversation_id,
+                    SlackTurn.kind == SlackTurnKind.FOLLOW_UP.value,
+                    SlackTurn.status == SlackTurnStatus.SUPPRESSED.value,
+                    SlackTurn.message_ts_value < before_value,
+                )
+                .order_by(SlackTurn.message_ts_value.desc())
+                .limit(limit)
+            )
+            return list(reversed([str(row.message_text) for row in rows]))
 
     async def claim_turn(self, event_id: str) -> SlackTurnClaim:
         normalized_event_id = _validate_required_identity(event_id, "Slack event ID", 512)

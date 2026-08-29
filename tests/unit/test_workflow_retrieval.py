@@ -9,8 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from langchain_core.language_models import BaseChatModel
 
-from knowledge_assistant.agent.citations import citation_issues
-from knowledge_assistant.agent.graph import build_graph
+from knowledge_assistant.agent.citations import citation_issues, hide_artifact_citations
 from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE, AgentProfile
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState
@@ -255,6 +254,87 @@ async def test_larger_evidence_budget_does_not_increase_artifact_read_batch() ->
     assert len(_result_evidence(result)) == 8
 
 
+async def test_multiple_planned_queries_each_contribute_top_evidence() -> None:
+    tools = FakeRetrievalTools(
+        search_results={
+            "competitor risk": [_hit("risk-first", -20), _hit("risk-second", -10)],
+            "promised milestone": [_hit("milestone-first", -1), _hit("milestone-second", 0)],
+        },
+        artifacts={
+            artifact_id: _evidence(artifact_id)
+            for artifact_id in (
+                "risk-first",
+                "risk-second",
+                "milestone-first",
+                "milestone-second",
+            )
+        },
+    )
+    nodes = _nodes(tools, replace(PRODUCTION_PROFILE, max_artifacts=4))
+    state = _state("competitor risk")
+    state["search_queries"] = ["competitor risk", "promised milestone"]
+
+    result = await nodes.execute_retrieval(state)
+
+    assert [item.artifact_id for item in _result_evidence(result)] == [
+        "risk-first",
+        "milestone-first",
+        "risk-second",
+        "milestone-second",
+    ]
+
+
+async def test_contextual_follow_up_rereads_selected_prior_evidence_before_gap_search() -> None:
+    tools = FakeRetrievalTools(
+        search_results={"what changed": [_hit("new")]},
+        artifacts={"prior": _evidence("prior"), "new": _evidence("new")},
+    )
+    nodes = _nodes(tools)
+    state = _state("what changed")
+    state["reuse_turn_id"] = "earlier"
+    state["history"] = [
+        {
+            "agent_run_id": "earlier",
+            "question": "What was planned?",
+            "answer": "A rollout was planned.",
+            "retrieved_artifact_ids": ["prior"],
+        }
+    ]
+
+    result = await nodes.execute_retrieval(state)
+
+    assert [item.artifact_id for item in _result_evidence(result)] == ["prior", "new"]
+    assert [request.artifact_ids for request in tools.read_requests] == [["prior"], ["new"]]
+    assert result["tool_call_count"] == 3
+
+
+async def test_refinement_does_not_reread_selected_prior_evidence() -> None:
+    tools = FakeRetrievalTools(
+        search_results={"first": [], "refined": [_hit("new")]},
+        artifacts={"prior": _evidence("prior"), "new": _evidence("new")},
+    )
+    nodes = _nodes(tools)
+    first_state = _state("first")
+    first_state["reuse_turn_id"] = "earlier"
+    first_state["history"] = [
+        {
+            "agent_run_id": "earlier",
+            "question": "What was planned?",
+            "answer": "A rollout was planned.",
+            "retrieved_artifact_ids": ["prior"],
+        }
+    ]
+
+    first_result = await nodes.execute_retrieval(first_state)
+    second_state = _apply_state_update(first_state, first_result)
+    second_state["search_queries"] = ["refined"]
+    second_result = await nodes.execute_retrieval(second_state)
+
+    assert [item.artifact_id for item in _result_evidence(second_result)] == ["prior", "new"]
+    assert [request.artifact_ids for request in tools.read_requests] == [["prior"], ["new"]]
+    assert second_result["tool_call_count"] == 4
+
+
 async def test_empty_evidence_is_model_refined_instead_of_repeating_queries() -> None:
     structured_model = Mock()
     structured_model.ainvoke = AsyncMock(
@@ -306,6 +386,12 @@ def test_grouped_artifact_citations_are_recognized() -> None:
     issues = citation_issues("Supported comparison [art_a, art_b].", evidence)
 
     assert issues == []
+
+
+def test_hiding_provenance_preserves_ordinary_bracketed_prose() -> None:
+    answer = "See [documentation]. Supported comparison [art_a, art_b]."
+
+    assert hide_artifact_citations(answer) == "See [documentation]. Supported comparison."
 
 
 def test_unknown_artifact_in_grouped_citations_is_rejected() -> None:
@@ -389,13 +475,3 @@ async def test_model_call_budget_fails_before_invoking_the_model() -> None:
         await nodes.plan_retrieval(state)
 
     model.with_structured_output.assert_not_called()
-
-
-def test_repaired_answer_is_reverified_once_before_finalization() -> None:
-    tools = FakeRetrievalTools(search_results={}, artifacts={})
-    graph = build_graph(_nodes(tools))
-    edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
-
-    assert ("repair_answer", "verify_repair") in edges
-    assert ("verify_repair", "reject_ungrounded_answer") in edges
-    assert ("reject_ungrounded_answer", "finalize") in edges

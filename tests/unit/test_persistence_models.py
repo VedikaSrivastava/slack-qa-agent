@@ -175,6 +175,7 @@ def test_slack_turns_are_normalized_immutable_queue_rows() -> None:
         "slack_user_id",
         "slack_message_ts",
         "message_ts_value",
+        "message_text",
         "slack_thread_ts",
         "conversation_id",
         "kind",

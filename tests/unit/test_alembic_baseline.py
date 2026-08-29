@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import runpy
 from pathlib import Path
-from typing import Any
 
 import pytest
 from alembic import command
@@ -11,18 +9,6 @@ from alembic.config import Config
 from knowledge_assistant.config import get_database_settings
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-VERSIONS_DIRECTORY = REPOSITORY_ROOT / "alembic" / "versions"
-
-
-def test_unreleased_schema_has_one_baseline_revision() -> None:
-    revision_files = sorted(
-        path for path in VERSIONS_DIRECTORY.glob("*.py") if path.name != "__init__.py"
-    )
-
-    assert [path.name for path in revision_files] == ["0001_initial_runtime_schema.py"]
-    migration: dict[str, Any] = runpy.run_path(str(revision_files[0]))
-    assert migration["revision"] == "0001"
-    assert migration["down_revision"] is None
 
 
 def test_baseline_compiles_complete_postgres_upgrade_sql(

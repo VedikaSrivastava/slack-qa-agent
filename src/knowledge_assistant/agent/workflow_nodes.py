@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TypedDict, TypeVar, cast
+from typing import Literal, TypedDict, TypeVar, cast
 
+import structlog
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from knowledge_assistant.agent.citations import citation_issues
-from knowledge_assistant.agent.models import QuestionDisposition
+from knowledge_assistant.agent.citations import (
+    citation_issues,
+    hide_artifact_citations,
+    references_for_cited_evidence,
+)
+from knowledge_assistant.agent.models import EvidenceReference, QuestionDisposition
 from knowledge_assistant.agent.profiles import AgentProfile
 from knowledge_assistant.agent.prompts import (
     GENERATE_ANSWER,
@@ -48,6 +53,15 @@ OUT_OF_SCOPE_ANSWER = (
     "that request. Ask me about a customer, product, incident, process, or other documented "
     "internal topic."
 )
+CAPABILITY_ANSWER = (
+    "I answer read-only questions using the internal knowledge base. I can search documented "
+    "customers, products, incidents, processes, and other internal topics, and I can show the "
+    "supporting sources when you ask for them."
+)
+NO_SAVED_SOURCES_ANSWER = "I don't have saved sources for an earlier answer in this thread."
+SAVED_SOURCES_ANSWER = "Here are the sources used for that earlier answer."
+
+logger = structlog.get_logger(__name__)
 
 _SIMPLE_GREETINGS = frozenset(
     {
@@ -70,6 +84,25 @@ class ModelCallBudgetExceededError(RuntimeError):
     """Raised before a workflow can exceed its code-reviewed model-call budget."""
 
 
+class StructuredOutputValidationError(ValueError):
+    """Preserve raw usage metadata when a structured model response cannot be parsed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_response: object | None = None,
+        model_call_count: int | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_response = raw_response
+        self.model_call_count = model_call_count
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class PromptEvidence(TypedDict):
     artifact_id: str
     title: str
@@ -90,9 +123,12 @@ class StandaloneQuestion(BaseModel):
 
 class RetrievalPlan(BaseModel):
     disposition: QuestionDisposition
+    show_sources: bool = False
+    response_mode: Literal["answer", "sources_only"] = "answer"
     queries: list[str] = Field(default_factory=list, max_length=MAX_INITIAL_QUERIES)
     account_lookup: AccountLookupInput | None = None
     clarification_question: str | None = Field(default=None, min_length=1, max_length=300)
+    reuse_turn_id: str | None = Field(default=None, min_length=1, max_length=256)
 
     @field_validator("queries")
     @classmethod
@@ -115,10 +151,16 @@ class RetrievalPlan(BaseModel):
     @model_validator(mode="after")
     def require_fields_for_disposition(self) -> RetrievalPlan:
         if self.disposition is QuestionDisposition.KNOWLEDGE_QUESTION:
-            if not self.queries:
-                raise ValueError("knowledge questions require at least one retrieval query")
             if self.clarification_question is not None:
                 raise ValueError("knowledge questions cannot include a clarification question")
+            if self.response_mode == "sources_only":
+                if self.queries or self.account_lookup is not None:
+                    raise ValueError("source-only responses cannot trigger retrieval")
+                return self
+            if not self.queries and self.account_lookup is None and self.reuse_turn_id is None:
+                raise ValueError(
+                    "knowledge questions require a query, account filter, or reusable prior turn"
+                )
             return self
         if self.disposition is QuestionDisposition.NEEDS_CLARIFICATION:
             if self.clarification_question is None:
@@ -130,6 +172,10 @@ class RetrievalPlan(BaseModel):
             raise ValueError("non-knowledge messages cannot trigger retrieval")
         if self.clarification_question is not None:
             raise ValueError("only unclear questions can include a clarification question")
+        if self.reuse_turn_id is not None:
+            raise ValueError("only knowledge questions can select a prior turn")
+        if self.response_mode != "answer":
+            raise ValueError("only knowledge questions can change response mode")
         return self
 
 
@@ -243,14 +289,24 @@ def _evidence_payload(state: AgentState) -> str:
     return json.dumps(prompt_evidence, ensure_ascii=False, separators=(",", ":"))
 
 
-def _rank_unique_artifact_ids(hits: list[SearchHit], limit: int) -> list[str]:
-    """Keep SQLite BM25 order, where lower (often more negative) scores rank first."""
+def _rank_unique_artifact_ids(hit_groups: list[list[SearchHit]], limit: int) -> list[str]:
+    """Preserve each planned query's best evidence before filling deeper lexical results."""
 
+    ranked_groups = [
+        sorted(group, key=lambda item: item.score if item.score is not None else 0)
+        for group in hit_groups
+    ]
     ranked_ids: list[str] = []
-    for hit in sorted(hits, key=lambda item: item.score if item.score is not None else 0):
-        if hit.artifact_id not in ranked_ids:
-            ranked_ids.append(hit.artifact_id)
-    return ranked_ids[:limit]
+    for result_rank in range(max((len(group) for group in ranked_groups), default=0)):
+        for group in ranked_groups:
+            if result_rank >= len(group):
+                continue
+            artifact_id = group[result_rank].artifact_id
+            if artifact_id not in ranked_ids:
+                ranked_ids.append(artifact_id)
+            if len(ranked_ids) == limit:
+                return ranked_ids
+    return ranked_ids
 
 
 def _merge_evidence(
@@ -281,6 +337,69 @@ def _merge_evidence(
     return merged_evidence
 
 
+def _matching_prior_turn(
+    history: list[ConversationTurn],
+    *,
+    reuse_turn_id: str | None,
+) -> ConversationTurn | None:
+    if reuse_turn_id is None:
+        return None
+    return next(
+        (turn for turn in history if turn["agent_run_id"] == reuse_turn_id),
+        None,
+    )
+
+
+def _sources_for_prior_turn(
+    history: list[ConversationTurn],
+    *,
+    reuse_turn_id: str | None,
+) -> list[dict[str, JsonValue]]:
+    turn = _matching_prior_turn(
+        history,
+        reuse_turn_id=reuse_turn_id,
+    )
+    if turn is None:
+        return []
+    return [
+        cast(
+            dict[str, JsonValue],
+            EvidenceReference.model_validate(source).model_dump(mode="json"),
+        )
+        for source in turn.get("sources", [])
+    ]
+
+
+def _artifact_ids_for_prior_turn(
+    history: list[ConversationTurn],
+    *,
+    reuse_turn_id: str | None,
+) -> list[str]:
+    turn = _matching_prior_turn(history, reuse_turn_id=reuse_turn_id)
+    if turn is None:
+        return []
+    return list(dict.fromkeys(turn.get("retrieved_artifact_ids", [])))
+
+
+def _response_sources_from_state(state: AgentState) -> list[dict[str, JsonValue]]:
+    explicit_sources = state.get("response_sources", [])
+    if explicit_sources:
+        return [
+            cast(
+                dict[str, JsonValue],
+                EvidenceReference.model_validate(source).model_dump(mode="json"),
+            )
+            for source in explicit_sources
+        ]
+
+    answer = state.get("final_answer") or state.get("draft_answer", "")
+    evidence = [EvidenceItem.model_validate(item) for item in state.get("evidence", [])]
+    return [
+        cast(dict[str, JsonValue], source.model_dump(mode="json"))
+        for source in references_for_cited_evidence(answer, evidence)
+    ]
+
+
 class GroundedAnswerNodes:
     """Node implementations for one bounded, evidence-grounded answer workflow."""
 
@@ -289,8 +408,14 @@ class GroundedAnswerNodes:
         model: BaseChatModel,
         tools: KnowledgeRetrievalTools,
         profile: AgentProfile,
+        *,
+        answer_model: BaseChatModel | None = None,
     ) -> None:
+        # `model` runs the structured classification nodes (resolve / plan / grade / verify).
+        # `answer_model` runs `generate_answer` / `repair_answer`; it defaults to `model` so a
+        # single-model profile is unchanged.
         self._model = model
+        self._answer_model = answer_model or model
         self._tools = tools
         self._profile = profile
 
@@ -315,14 +440,103 @@ class GroundedAnswerNodes:
         if isinstance(result, output_type):
             return result, None
         if not isinstance(result, dict):
-            raise TypeError(f"Structured model returned unexpected {type(result).__name__}")
+            raise StructuredOutputValidationError(
+                f"Structured model returned unexpected {type(result).__name__}"
+            )
         parsed = result.get("parsed")
         if not isinstance(parsed, output_type):
             parsing_error = result.get("parsing_error")
             if isinstance(parsing_error, BaseException):
-                raise ValueError("Structured model output could not be parsed") from parsing_error
-            raise ValueError("Structured model output did not contain the expected parsed value")
+                raise StructuredOutputValidationError(
+                    "Structured model output could not be parsed",
+                    raw_response=result.get("raw"),
+                ) from parsing_error
+            raise StructuredOutputValidationError(
+                "Structured model output did not contain the expected parsed value",
+                raw_response=result.get("raw"),
+            )
         return parsed, result.get("raw")
+
+    async def _invoke_structured_with_retry(
+        self,
+        output_type: type[StructuredOutput],
+        messages: list[BaseMessage],
+        *,
+        state: AgentState,
+    ) -> tuple[StructuredOutput, AgentState]:
+        """Re-ask once for an invalid schema, then surface a typed terminal failure.
+
+        Every attempted call consumes the hard model-call budget and contributes any available
+        token metadata. The second invalid response is never converted into guessed behavior.
+        """
+
+        model_call_count = self._next_model_call_count(state)
+        input_tokens = state.get("input_tokens", 0)
+        output_tokens = state.get("output_tokens", 0)
+        try:
+            parsed, raw_response = await self._invoke_structured(output_type, messages)
+            call_input_tokens, call_output_tokens = _token_usage(raw_response)
+            return parsed, {
+                "model_call_count": model_call_count,
+                "input_tokens": input_tokens + call_input_tokens,
+                "output_tokens": output_tokens + call_output_tokens,
+            }
+        except (ValidationError, ValueError) as invalid:
+            failed_input_tokens, failed_output_tokens = _token_usage(
+                getattr(invalid, "raw_response", None)
+            )
+            input_tokens += failed_input_tokens
+            output_tokens += failed_output_tokens
+            logger.warning(
+                "structured_output_retry_started",
+                agent_run_id=state.get("agent_run_id"),
+                output_schema=output_type.__name__,
+                model_call_count=model_call_count,
+                exception_class=type(invalid).__name__,
+            )
+            reason = " ".join(str(invalid).split())[:500]
+            retry_messages = [
+                *messages,
+                HumanMessage(
+                    content=(
+                        f"That response was rejected by schema validation: {reason}. "
+                        f"Return a valid {output_type.__name__} that obeys every rule."
+                    )
+                ),
+            ]
+            retry_state: AgentState = {**state, "model_call_count": model_call_count}
+            model_call_count = self._next_model_call_count(retry_state)
+            try:
+                parsed, raw_response = await self._invoke_structured(output_type, retry_messages)
+                call_input_tokens, call_output_tokens = _token_usage(raw_response)
+                input_tokens += call_input_tokens
+                output_tokens += call_output_tokens
+                return parsed, {
+                    "model_call_count": model_call_count,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }
+            except (ValidationError, ValueError) as retry_invalid:
+                retry_input_tokens, retry_output_tokens = _token_usage(
+                    getattr(retry_invalid, "raw_response", None)
+                )
+                input_tokens += retry_input_tokens
+                output_tokens += retry_output_tokens
+                logger.error(
+                    "structured_output_validation_failed",
+                    agent_run_id=state.get("agent_run_id"),
+                    output_schema=output_type.__name__,
+                    model_call_count=model_call_count,
+                    exception_class=type(retry_invalid).__name__,
+                    error_code="structured_output_invalid",
+                )
+                raise StructuredOutputValidationError(
+                    f"{output_type.__name__} remained invalid after one repair attempt",
+                    raw_response=getattr(retry_invalid, "raw_response", None),
+                    model_call_count=model_call_count,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ) from retry_invalid
 
     async def resolve_question(self, state: AgentState) -> AgentState:
         history = state.get("history", [])[-self._profile.max_history_turns :]
@@ -368,27 +582,72 @@ class GroundedAnswerNodes:
         return "plan"
 
     async def plan_retrieval(self, state: AgentState) -> AgentState:
-        model_call_count = self._next_model_call_count(state)
-        parsed, raw_response = await self._invoke_structured(
+        standalone_question = state["standalone_question"]
+        prior_turns = [
+            {
+                "agent_run_id": turn["agent_run_id"],
+                "question": turn["question"],
+                "has_sources": bool(turn.get("sources")),
+                "retrieved_artifact_count": len(turn.get("retrieved_artifact_ids", [])),
+            }
+            for turn in state.get("history", [])
+        ]
+        parsed, invocation_update = await self._invoke_structured_with_retry(
             RetrievalPlan,
             [
                 SystemMessage(content=PLAN_RETRIEVAL),
-                HumanMessage(content=state["standalone_question"]),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "question": standalone_question,
+                            "prior_turns": prior_turns,
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
             ],
+            state=state,
         )
+        available_turn_ids = {turn["agent_run_id"] for turn in state.get("history", [])}
+        if parsed.reuse_turn_id is not None and parsed.reuse_turn_id not in available_turn_ids:
+            raise StructuredOutputValidationError(
+                "Retrieval plan selected an unavailable prior turn",
+                model_call_count=invocation_update.get("model_call_count"),
+                input_tokens=invocation_update.get("input_tokens"),
+                output_tokens=invocation_update.get("output_tokens"),
+            )
         update: AgentState = {
             "question_disposition": parsed.disposition,
+            "show_sources": parsed.show_sources,
+            "response_mode": parsed.response_mode,
+            "reuse_turn_id": parsed.reuse_turn_id,
             "search_queries": parsed.queries[: self._profile.max_initial_queries],
             "account_lookup": cast(
                 dict[str, JsonValue], parsed.account_lookup.model_dump(mode="json")
             )
             if parsed.account_lookup
             else None,
-            "model_call_count": model_call_count,
-            **_usage_state_update(state, raw_response),
+            **invocation_update,
         }
         if parsed.disposition is QuestionDisposition.GREETING:
             update.update({"final_answer": GREETING_ANSWER, "grounding_valid": True})
+        elif parsed.response_mode == "sources_only":
+            response_sources = _sources_for_prior_turn(
+                state.get("history", []),
+                reuse_turn_id=parsed.reuse_turn_id,
+            )
+            update.update(
+                {
+                    "final_answer": (
+                        SAVED_SOURCES_ANSWER if response_sources else NO_SAVED_SOURCES_ANSWER
+                    ),
+                    "show_sources": bool(response_sources),
+                    "response_sources": response_sources,
+                    "grounding_valid": True,
+                }
+            )
+        elif parsed.disposition is QuestionDisposition.CAPABILITY_QUESTION:
+            update.update({"final_answer": CAPABILITY_ANSWER, "grounding_valid": True})
         elif parsed.disposition is QuestionDisposition.NEEDS_CLARIFICATION:
             update.update(
                 {
@@ -401,6 +660,8 @@ class GroundedAnswerNodes:
         return update
 
     def route_after_plan(self, state: AgentState) -> str:
+        if state.get("response_mode") == "sources_only":
+            return "finalize"
         if (
             QuestionDisposition(state["question_disposition"])
             is QuestionDisposition.KNOWLEDGE_QUESTION
@@ -411,14 +672,37 @@ class GroundedAnswerNodes:
     async def execute_retrieval(self, state: AgentState) -> AgentState:
         existing_tool_calls = state.get("tool_call_count", 0)
         remaining_tool_calls = max(0, self._profile.max_tool_calls - existing_tool_calls)
+        current_evidence = [EvidenceItem.model_validate(item) for item in state.get("evidence", [])]
+        current_artifact_ids = {item.artifact_id for item in current_evidence}
+        reused_artifact_ids = _artifact_ids_for_prior_turn(
+            state.get("history", []),
+            reuse_turn_id=state.get("reuse_turn_id"),
+        )
+        # A refinement round receives cumulative evidence. Only reread prior artifacts that were
+        # not already restored in an earlier round, otherwise reuse consumes budget twice.
+        reused_artifact_ids = [
+            artifact_id
+            for artifact_id in reused_artifact_ids
+            if artifact_id not in current_artifact_ids
+        ][:MAX_ARTIFACT_BATCH]
+        reused_evidence: list[EvidenceItem] = []
+        reuse_read_calls = 0
+        if reused_artifact_ids and remaining_tool_calls > 0:
+            reused_evidence = await self._tools.read_artifacts(
+                ReadArtifactsInput(artifact_ids=reused_artifact_ids)
+            )
+            reuse_read_calls = 1
+            remaining_tool_calls -= 1
+        previous_evidence = _merge_evidence(
+            current_evidence,
+            reused_evidence,
+            max_artifacts=self._profile.max_artifacts,
+        )
         account_evidence, account_lookup_calls = await self._lookup_account_evidence(
             state,
             remaining_tool_calls,
         )
         remaining_tool_calls -= account_lookup_calls
-        previous_evidence = [
-            EvidenceItem.model_validate(item) for item in state.get("evidence", [])
-        ]
         evidence_before_lexical_read = _merge_evidence(
             previous_evidence,
             account_evidence,
@@ -442,9 +726,9 @@ class GroundedAnswerNodes:
             else 0
         )
         search_queries = state.get("search_queries", [])[:search_query_limit]
-        search_hits = await self._search_knowledge(search_queries)
+        search_hit_groups = await self._search_knowledge(search_queries)
         ranked_artifact_ids = _rank_unique_artifact_ids(
-            search_hits,
+            search_hit_groups,
             self._profile.max_artifacts,
         )
         evidence, artifact_read_calls = await self._read_unseen_artifacts(
@@ -458,6 +742,7 @@ class GroundedAnswerNodes:
             ],
             "retrieval_round_count": state.get("retrieval_round_count", 0) + 1,
             "tool_call_count": existing_tool_calls
+            + reuse_read_calls
             + len(search_queries)
             + artifact_read_calls
             + account_lookup_calls,
@@ -483,15 +768,15 @@ class GroundedAnswerNodes:
         evidence = await self._tools.lookup_accounts(bounded_request)
         return evidence, 1
 
-    async def _search_knowledge(self, queries: list[str]) -> list[SearchHit]:
-        hits: list[SearchHit] = []
+    async def _search_knowledge(self, queries: list[str]) -> list[list[SearchHit]]:
+        hit_groups: list[list[SearchHit]] = []
         for query in queries:
-            hits.extend(
+            hit_groups.append(
                 await self._tools.search_knowledge(
                     SearchKnowledgeInput(query=query, limit=self._profile.search_limit)
                 )
             )
-        return hits
+        return hit_groups
 
     async def _read_unseen_artifacts(
         self,
@@ -555,7 +840,7 @@ class GroundedAnswerNodes:
     async def refine_retrieval(self, state: AgentState) -> AgentState:
         queries = [query for query in state.get("search_queries", []) if query.strip()]
         if not queries:
-            queries = [state["standalone_question"]]
+            raise RuntimeError("Evidence refinement reached execution without a query")
         return {"search_queries": queries[: self._profile.max_refined_queries]}
 
     async def generate_answer(self, state: AgentState) -> AgentState:
@@ -566,7 +851,7 @@ class GroundedAnswerNodes:
                 "grounding_valid": True,
             }
         model_call_count = self._next_model_call_count(state)
-        response = await self._model.ainvoke(
+        response = await self._answer_model.ainvoke(
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{GENERATE_ANSWER}"),
                 HumanMessage(
@@ -616,7 +901,7 @@ class GroundedAnswerNodes:
 
     async def repair_answer(self, state: AgentState) -> AgentState:
         model_call_count = self._next_model_call_count(state)
-        response = await self._model.ainvoke(
+        response = await self._answer_model.ainvoke(
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{REPAIR_ANSWER}"),
                 HumanMessage(
@@ -645,10 +930,21 @@ class GroundedAnswerNodes:
 
     async def finalize(self, state: AgentState) -> AgentState:
         answer = state.get("final_answer") or state["draft_answer"]
+        response_sources = _response_sources_from_state(state)
+        retrieved_artifact_ids = [
+            EvidenceItem.model_validate(item).artifact_id for item in state.get("evidence", [])
+        ]
+        if not retrieved_artifact_ids and state.get("reuse_turn_id") is not None:
+            retrieved_artifact_ids = _artifact_ids_for_prior_turn(
+                state.get("history", []),
+                reuse_turn_id=state.get("reuse_turn_id"),
+            )
         turn = ConversationTurn(
             agent_run_id=state["agent_run_id"],
             question=state["question"],
-            answer=answer,
+            answer=hide_artifact_citations(answer),
+            sources=response_sources,
+            retrieved_artifact_ids=retrieved_artifact_ids,
         )
         agent_run_id = state["agent_run_id"]
         prior_turns = state.get("history", [])
@@ -656,4 +952,8 @@ class GroundedAnswerNodes:
             prior_turn for prior_turn in prior_turns if prior_turn["agent_run_id"] != agent_run_id
         ]
         history = [*prior_turns, turn][-self._profile.max_history_turns :]
-        return {"final_answer": answer, "history": history}
+        return {
+            "final_answer": answer,
+            "response_sources": response_sources,
+            "history": history,
+        }

@@ -115,7 +115,7 @@ def create_app(settings: SlackApplicationSettings | None = None) -> FastAPI:
     follow_up_dispatcher = InngestFollowUpCandidateDispatcher(inngest_client)
     stop_handoff = InngestAgentSessionStopHandoff(inngest_client, ledger)
     publisher = SlackPublisher(slack_client, ledger)
-    routing_policy = SlackRoutingPolicy(settings.slack_routing_policy)
+    routing_policy = settings.slack_routing_policy
     responder_classifier = (
         create_responder_classifier(settings, PRODUCTION_PROFILE)
         if routing_policy is SlackRoutingPolicy.AGENT_OWNED_THREAD_FOLLOW_UPS

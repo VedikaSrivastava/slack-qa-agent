@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from knowledge_assistant.agent.models import EvidenceReference
 from knowledge_assistant.retrieval.models import EvidenceItem
 
 # Supplied artifact IDs use the `art_` prefix. Search only inside square brackets so ordinary
@@ -21,6 +22,15 @@ def cited_artifact_ids(answer: str) -> set[str]:
     }
 
 
+def hide_artifact_citations(answer: str) -> str:
+    """Remove only provenance markers, leaving ordinary bracketed Slack prose intact."""
+
+    def replace_citation(match: re.Match[str]) -> str:
+        return "" if _ARTIFACT_ID_PATTERN.search(match.group(1)) else match.group(0)
+
+    return re.sub(r"[ \t]*\[([^\[\]]+)\]", replace_citation, answer)
+
+
 def citation_issues(answer: str, evidence: list[EvidenceItem]) -> list[str]:
     cited_ids = cited_artifact_ids(answer)
     if not cited_ids:
@@ -31,3 +41,21 @@ def citation_issues(answer: str, evidence: list[EvidenceItem]) -> list[str]:
     if unknown_ids:
         return [f"Answer cites artifacts that were not retrieved: {', '.join(unknown_ids)}"]
     return []
+
+
+def references_for_cited_evidence(
+    answer: str,
+    evidence: list[EvidenceItem],
+) -> list[EvidenceReference]:
+    """Build compact ordered provenance without copying retrieved text into thread history."""
+
+    cited_ids = cited_artifact_ids(answer)
+    return [
+        EvidenceReference(
+            artifact_id=item.artifact_id,
+            title=item.title,
+            score=item.score,
+        )
+        for item in evidence
+        if item.artifact_id in cited_ids
+    ]

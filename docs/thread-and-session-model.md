@@ -72,9 +72,11 @@ message such as "When does it renew?" into a standalone question using the recen
 The resolver does not answer the question.
 
 Every finalized outcome is a turn, including a greeting, clarification request, scope response, or
-grounded answer. The history stores only the user message, final user-visible answer, and run ID;
-it does not store private reasoning. A new root Slack thread gets a different checkpoint identity
-even if its text and participants are identical.
+grounded answer. History stores the user message, clean user-visible answer, run ID, compact cited
+source references, and ordered retrieved artifact IDs. It does not store private reasoning, full
+evidence content, or snippets. The planner may select a supplied prior turn for source display or
+contextual reuse; code validates that selection. A new root Slack thread gets a different
+checkpoint identity even if its text and participants are identical.
 
 This bound controls what is reused as model context; it is not a retention or erasure boundary.
 PostgreSQL checkpoint revisions and the other durable Slack-derived records remain until the local
@@ -164,3 +166,13 @@ Direct-message and multiparty-DM events are not
 subscribed, so the Agent app container is not an alternate supported ingress in this take-home.
 Adding it would require explicit `message.im`/`message.mpim` behavior, scopes, authorization rules,
 and tests rather than silently treating it as equivalent to a shared channel.
+
+## Explicit follow-up recovery
+
+Unmentioned human thread replies are conservatively classified before the agent answers. When a
+reply is suppressed as ambiguous, its bounded text remains in the durable turn ledger. If a later
+thread reply explicitly mentions QA Agent, the processor receives up to three earlier suppressed
+human messages as labelled, untrusted context. This lets a short clarification such as `??` refer
+back to the immediately preceding unanswered question without exposing an unbounded channel
+transcript. The current explicit message remains authoritative, and users should include the full
+question whenever practical.

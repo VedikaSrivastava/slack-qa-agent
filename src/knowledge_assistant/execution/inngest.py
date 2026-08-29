@@ -11,6 +11,10 @@ import inngest
 import structlog
 
 from knowledge_assistant.agent.models import AgentResponse, FinalAnswerEvent, ProgressEvent
+from knowledge_assistant.agent.workflow_nodes import (
+    ModelCallBudgetExceededError,
+    StructuredOutputValidationError,
+)
 from knowledge_assistant.application.question_processor import StreamingQuestionProcessor
 from knowledge_assistant.config import SlackApplicationSettings
 from knowledge_assistant.execution.dispatcher import (
@@ -25,6 +29,7 @@ from knowledge_assistant.execution.models import (
     QuestionCancellationJob,
     QuestionJob,
 )
+from knowledge_assistant.execution.thread_context import add_suppressed_thread_context
 from knowledge_assistant.integrations.slack.publisher import (
     PreparedDelivery,
     ProgressSurfaceAction,
@@ -242,6 +247,84 @@ async def _finalize_user_cancellation(
     return "cancelled"
 
 
+def _delivery_step_name(step_prefix: str | None, step_name: str) -> str:
+    return f"{step_prefix}-{step_name}" if step_prefix else step_name
+
+
+async def _deliver_persisted_response(
+    ctx: inngest.Context,
+    *,
+    step_prefix: str | None,
+    run_id: uuid.UUID,
+    response: AgentResponse,
+    ledger: RunLedger,
+    publisher: SlackPublisher,
+) -> bool:
+    """Claim and complete the one canonical delivery workflow for a persisted answer."""
+
+    async def prepare_delivery() -> dict[str, Any]:
+        prepared = await publisher.prepare_delivery(run_id, response)
+        return prepared.model_dump(mode="json")
+
+    prepared_payload = cast(
+        dict[str, Any],
+        await ctx.step.run(
+            _delivery_step_name(step_prefix, "prepare-delivery"),
+            prepare_delivery,
+        ),
+    )
+    prepared = PreparedDelivery.model_validate(prepared_payload)
+    should_deliver = bool(
+        await ctx.step.run(
+            _delivery_step_name(step_prefix, "claim-delivery"),
+            lambda: publisher.begin_delivery(run_id),
+        )
+    )
+    if not should_deliver:
+        delivery = await ledger.get_delivery(run_id)
+        if delivery.delivery_status != DeliveryStatus.DELIVERED:
+            return False
+        recovered_step_name = (
+            _delivery_step_name(step_prefix, "mark-run-completed")
+            if step_prefix
+            else "recover-delivered-run"
+        )
+        await ctx.step.run(
+            recovered_step_name,
+            lambda: ledger.mark_succeeded(run_id, response),
+        )
+        return True
+
+    for part_number in range(1, len(prepared.parts) + 1):
+
+        async def publish_part(
+            payload: dict[str, Any],
+            number: int,
+        ) -> str:
+            return await publisher.publish_delivery_part(
+                run_id,
+                PreparedDelivery.model_validate(payload),
+                number,
+            )
+
+        await ctx.step.run(
+            _delivery_step_name(step_prefix, f"publish-answer-part-{part_number}"),
+            publish_part,
+            prepared_payload,
+            part_number,
+        )
+
+    await ctx.step.run(
+        _delivery_step_name(step_prefix, "complete-delivery"),
+        lambda: publisher.complete_delivery(run_id),
+    )
+    await ctx.step.run(
+        _delivery_step_name(step_prefix, "mark-run-completed"),
+        lambda: ledger.mark_succeeded(run_id, response),
+    )
+    return True
+
+
 async def _recover_persisted_delivery(
     ctx: inngest.Context,
     *,
@@ -268,68 +351,22 @@ async def _recover_persisted_delivery(
     }:
         return False
 
-    async def prepare_delivery() -> dict[str, Any]:
-        prepared = await publisher.prepare_delivery(run_id, response)
-        return prepared.model_dump(mode="json")
-
-    prepared_payload = cast(
-        dict[str, Any],
-        await ctx.step.run(f"{step_prefix}-prepare-delivery", prepare_delivery),
-    )
-    prepared = PreparedDelivery.model_validate(prepared_payload)
-    should_deliver = bool(
-        await ctx.step.run(
-            f"{step_prefix}-claim-delivery",
-            lambda: publisher.begin_delivery(run_id),
+    try:
+        return await _deliver_persisted_response(
+            ctx,
+            step_prefix=step_prefix,
+            run_id=run_id,
+            response=response,
+            ledger=ledger,
+            publisher=publisher,
         )
-    )
-    if not should_deliver:
-        delivery = await ledger.get_delivery(run_id)
-        if delivery.delivery_status != DeliveryStatus.DELIVERED:
-            return False
-        await ctx.step.run(
-            f"{step_prefix}-mark-run-completed",
-            lambda: ledger.mark_succeeded(run_id, response),
+    except SlackDeliveryRejectedError as exc:
+        logger.warning(
+            "slack_canonical_delivery_rejected",
+            agent_run_id=str(run_id),
+            exception_class=type(exc).__name__,
         )
-        return True
-
-    for part_number in range(1, len(prepared.parts) + 1):
-
-        async def publish_part(
-            payload: dict[str, Any],
-            number: int,
-        ) -> str:
-            return await publisher.publish_delivery_part(
-                run_id,
-                PreparedDelivery.model_validate(payload),
-                number,
-            )
-
-        try:
-            await ctx.step.run(
-                f"{step_prefix}-publish-answer-part-{part_number}",
-                publish_part,
-                prepared_payload,
-                part_number,
-            )
-        except SlackDeliveryRejectedError as exc:
-            logger.warning(
-                "slack_canonical_delivery_rejected",
-                agent_run_id=str(run_id),
-                delivery_part_number=part_number,
-                exception_class=type(exc).__name__,
-            )
-            return False
-
-    await ctx.step.run(
-        f"{step_prefix}-complete-delivery",
-        lambda: publisher.complete_delivery(run_id),
-    )
-    await ctx.step.run(
-        f"{step_prefix}-mark-run-completed",
-        lambda: ledger.mark_succeeded(run_id, response),
-    )
-    return True
+        return False
 
 
 async def _has_partially_acknowledged_delivery(
@@ -449,12 +486,30 @@ def create_question_functions(
         async def run_agent() -> dict[str, Any]:
             # The processor boundary encapsulates all model + retrieval work and is the main idempotent
             # work unit: replaying this step must reuse checkpoints, not branch a second run.
-            response = await _stream_agent_result(
-                job=job,
-                processor_provider=processor_provider,
-                ledger=ledger,
-                publisher=publisher,
-            )
+            try:
+                response = await _stream_agent_result(
+                    job=job,
+                    processor_provider=processor_provider,
+                    ledger=ledger,
+                    publisher=publisher,
+                )
+            except (ModelCallBudgetExceededError, StructuredOutputValidationError) as exc:
+                error_code = (
+                    "model_call_budget_exhausted"
+                    if isinstance(exc, ModelCallBudgetExceededError)
+                    else "structured_output_invalid"
+                )
+                logger.error(
+                    "agent_processing_non_retriable",
+                    agent_run_id=str(job.agent_run_id),
+                    conversation_id=job.conversation_id,
+                    slack_event_id=job.event_id,
+                    error_code=error_code,
+                    exception_class=type(exc).__name__,
+                )
+                raise inngest.NonRetriableError(
+                    "Agent processing failed a deterministic validation check"
+                ) from exc
             if response is None:
                 return {"cancelled": True, "response": None}
             return {"cancelled": False, "response": response.model_dump(mode="json")}
@@ -493,68 +548,20 @@ def create_question_functions(
                 "status": cancellation_status,
             }
 
-        async def prepare_delivery() -> dict[str, Any]:
-            prepared = await publisher.prepare_delivery(job.agent_run_id, response)
-            return prepared.model_dump(mode="json")
-
-        prepared_payload = cast(
-            dict[str, Any],
-            await ctx.step.run("prepare-delivery", prepare_delivery),
+        was_delivered = await _deliver_persisted_response(
+            ctx,
+            step_prefix=None,
+            run_id=job.agent_run_id,
+            response=response,
+            ledger=ledger,
+            publisher=publisher,
         )
-        prepared = PreparedDelivery.model_validate(prepared_payload)
-        should_deliver = bool(
-            await ctx.step.run(
-                "claim-delivery",
-                lambda: publisher.begin_delivery(job.agent_run_id),
-            )
-        )
-        if not should_deliver:
+        if not was_delivered:
             delivery = await ledger.get_delivery(job.agent_run_id)
-            if delivery.delivery_status == DeliveryStatus.DELIVERED:
-                await ctx.step.run(
-                    "recover-delivered-run",
-                    lambda: ledger.mark_succeeded(job.agent_run_id, response),
-                )
-                return {
-                    "agent_run_id": str(job.agent_run_id),
-                    "status": "succeeded",
-                }
             return {
                 "agent_run_id": str(job.agent_run_id),
                 "status": delivery.delivery_status.value,
             }
-
-        for part_number in range(1, len(prepared.parts) + 1):
-
-            async def publish_part(
-                payload: dict[str, Any],
-                number: int,
-            ) -> str:
-                return await publisher.publish_delivery_part(
-                    job.agent_run_id,
-                    PreparedDelivery.model_validate(payload),
-                    number,
-                )
-
-            await ctx.step.run(
-                f"publish-answer-part-{part_number}",
-                publish_part,
-                prepared_payload,
-                part_number,
-            )
-
-        await ctx.step.run(
-            "complete-delivery",
-            lambda: publisher.complete_delivery(job.agent_run_id),
-        )
-
-        async def mark_completed(payload: dict[str, Any]) -> None:
-            await ledger.mark_succeeded(
-                job.agent_run_id,
-                AgentResponse.model_validate(payload),
-            )
-
-        await ctx.step.run("mark-run-completed", mark_completed, response_payload)
         logger.info(
             "slack_question_completed",
             agent_run_id=str(job.agent_run_id),
@@ -659,6 +666,7 @@ def create_question_functions(
             message_ts = question.message_ts
             thread_ts = question.thread_ts
             conversation_id = question.conversation_id
+            message_text = question.question
         elif ctx.event.name == FOLLOW_UP_CANDIDATE_EVENT:
             candidate = FollowUpCandidateJob.model_validate(ctx.event.data)
             question = None
@@ -670,6 +678,7 @@ def create_question_functions(
             message_ts = candidate.message_ts
             thread_ts = candidate.thread_ts
             conversation_id = candidate.conversation_id
+            message_text = candidate.message_text
         else:
             raise ValueError(f"Unsupported Slack turn event: {ctx.event.name}")
 
@@ -682,6 +691,7 @@ def create_question_functions(
                 user_id=user_id,
                 message_ts=message_ts,
                 thread_ts=thread_ts,
+                message_text=message_text,
                 kind=turn_kind,
             )
             return {
@@ -828,6 +838,33 @@ def create_question_functions(
 
         if question is None:
             raise RuntimeError("Accepted Slack turn has no question")
+
+        if turn_kind is SlackTurnKind.EXPLICIT_MENTION:
+            explicit_conversation_id = question.conversation_id
+            explicit_message_ts = question.message_ts
+
+            async def load_suppressed_thread_context() -> list[str]:
+                return await ledger.get_recent_suppressed_thread_messages(
+                    conversation_id=explicit_conversation_id,
+                    before_message_ts=explicit_message_ts,
+                    limit=3,
+                )
+
+            suppressed_messages = cast(
+                list[str],
+                await ctx.step.run(
+                    "load-suppressed-thread-context",
+                    load_suppressed_thread_context,
+                ),
+            )
+            question = question.model_copy(
+                update={
+                    "question": add_suppressed_thread_context(
+                        question.question,
+                        suppressed_messages,
+                    )
+                }
+            )
 
         async def create_linked_run() -> dict[str, Any]:
             run_id, is_new_run = await ledger.create_queued_for_turn(question, event_id)
@@ -1071,6 +1108,13 @@ def create_question_functions(
             )
             return {"agent_run_id": str(job.agent_run_id), "status": "failed"}
 
+        logger.error(
+            "slack_question_processing_failed",
+            agent_run_id=str(job.agent_run_id),
+            conversation_id=job.conversation_id,
+            slack_event_id=job.event_id,
+            error_code="inngest_retries_exhausted",
+        )
         await ctx.step.run(
             "publish-safe-error",
             lambda: publisher.publish_safe_error(job.agent_run_id),

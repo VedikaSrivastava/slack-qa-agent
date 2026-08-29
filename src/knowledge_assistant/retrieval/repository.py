@@ -20,6 +20,9 @@ from knowledge_assistant.retrieval.models import (
 from knowledge_assistant.retrieval.schema import KnowledgeSchema, validate_knowledge_schema
 
 MAX_STRUCTURED_EVIDENCE_CHARS = 1_500
+DEFAULT_FTS_CANDIDATE_MULTIPLIER = 6
+MAX_FTS_CANDIDATES = 50
+DEFAULT_FTS_FIRST_PASS_RESULTS_PER_SCENARIO = 2
 type SQLParameter = str | int
 
 
@@ -45,6 +48,36 @@ def _fts_query(value: str) -> str:
     tokens = re.findall(r"[A-Za-z0-9_./:-]+", value)[:32]
     # OR is recall-first; the bounded grading stage decides relevance.
     return " OR ".join(f'"{token}"' for token in tokens)
+
+
+def _diversify_fts_rows(
+    rows: list[sqlite3.Row],
+    *,
+    limit: int,
+    first_pass_results_per_scenario: int | None,
+) -> list[sqlite3.Row]:
+    """Favor scenario coverage, then backfill without sacrificing single-scenario recall."""
+
+    if first_pass_results_per_scenario is None:
+        return rows[:limit]
+
+    selected_rows: list[sqlite3.Row] = []
+    deferred_rows: list[sqlite3.Row] = []
+    scenario_counts: dict[str, int] = {}
+    for row in rows:
+        scenario_id = str(row["scenario_id"])
+        if scenario_counts.get(scenario_id, 0) < first_pass_results_per_scenario:
+            selected_rows.append(row)
+            scenario_counts[scenario_id] = scenario_counts.get(scenario_id, 0) + 1
+            if len(selected_rows) == limit:
+                return selected_rows
+        else:
+            deferred_rows.append(row)
+
+    # A narrow query may legitimately match only one scenario. Preserve BM25 order for the
+    # deferred candidates and use them only when diversity cannot fill the caller's limit.
+    selected_rows.extend(deferred_rows[: limit - len(selected_rows)])
+    return selected_rows
 
 
 def _build_account_lookup_query(request: AccountLookupInput) -> tuple[str, list[SQLParameter]]:
@@ -109,8 +142,25 @@ def _build_account_lookup_query(request: AccountLookupInput) -> tuple[str, list[
 
 
 class SQLiteKnowledgeRepository:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        fts_candidate_multiplier: int = DEFAULT_FTS_CANDIDATE_MULTIPLIER,
+        fts_first_pass_results_per_scenario: int | None = (
+            DEFAULT_FTS_FIRST_PASS_RESULTS_PER_SCENARIO
+        ),
+    ) -> None:
+        if not 1 <= fts_candidate_multiplier <= 10:
+            raise ValueError("fts_candidate_multiplier must be between 1 and 10")
+        if (
+            fts_first_pass_results_per_scenario is not None
+            and fts_first_pass_results_per_scenario < 1
+        ):
+            raise ValueError("fts_first_pass_results_per_scenario must be positive or None")
         self._path = path
+        self._fts_candidate_multiplier = fts_candidate_multiplier
+        self._fts_first_pass_results_per_scenario = fts_first_pass_results_per_scenario
         self._validated_schema: KnowledgeSchema | None = None
 
     def validate_runtime_schema(self) -> KnowledgeSchema:
@@ -180,8 +230,8 @@ class SQLiteKnowledgeRepository:
             self._validated_schema = validate_knowledge_schema(connection)
         return self._validated_schema
 
-    @staticmethod
     def _search_fts_rows(
+        self,
         connection: sqlite3.Connection,
         request: SearchKnowledgeInput,
     ) -> list[sqlite3.Row]:
@@ -201,10 +251,20 @@ class SQLiteKnowledgeRepository:
             "JOIN artifacts AS a ON a.artifact_id = artifacts_fts.artifact_id "
             f"WHERE {' AND '.join(where_clauses)} ORDER BY _retrieval_score LIMIT ?"
         )
-        return connection.execute(
+        candidate_limit = (
+            request.limit
+            if self._fts_first_pass_results_per_scenario is None
+            else min(request.limit * self._fts_candidate_multiplier, MAX_FTS_CANDIDATES)
+        )
+        candidate_rows = connection.execute(
             query,
-            [fts_query, *filter_parameters, request.limit],
+            [fts_query, *filter_parameters, candidate_limit],
         ).fetchall()
+        return _diversify_fts_rows(
+            candidate_rows,
+            limit=request.limit,
+            first_pass_results_per_scenario=self._fts_first_pass_results_per_scenario,
+        )
 
     @staticmethod
     def _to_search_hit(row: sqlite3.Row, schema: KnowledgeSchema) -> SearchHit:

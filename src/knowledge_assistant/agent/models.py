@@ -19,6 +19,7 @@ class QuestionDisposition(StrEnum):
     """User intent at the grounded-Q&A workflow boundary."""
 
     KNOWLEDGE_QUESTION = "knowledge_question"
+    CAPABILITY_QUESTION = "capability_question"
     GREETING = "greeting"
     NEEDS_CLARIFICATION = "needs_clarification"
     OUT_OF_SCOPE = "out_of_scope"
@@ -27,6 +28,7 @@ class QuestionDisposition(StrEnum):
 class AgentResponse(BaseModel):
     answer: str
     disposition: QuestionDisposition = QuestionDisposition.KNOWLEDGE_QUESTION
+    show_sources: bool = False
     sources: list[EvidenceReference] = Field(default_factory=list)
     retrieved_artifact_ids: list[str] = Field(default_factory=list)
     tool_call_count: int = Field(default=0, ge=0)

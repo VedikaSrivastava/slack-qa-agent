@@ -1,6 +1,6 @@
 # Implementation journal
 
-Last updated: 2026-08-27
+Last updated: 2026-08-29
 
 This is a factual engineering record of the implementation work, investigations, rejected
 approaches, failure modes, and remaining validation gaps. It is intentionally more detailed than
@@ -24,6 +24,10 @@ boundaries:
   when Slack's size limit requires them;
 - Agent Session Stop is supported through a durable, race-safe cooperative cancellation path;
 - greetings, unclear messages, and out-of-scope requests have explicit terminal behavior;
+- ordinary answers hide internal artifact markers; a source request renders saved provenance;
+- bounded turns retain compact source references and retrieved IDs so contextual follow-ups can
+  re-read trusted evidence and search only for gaps;
+- retrieval, model actions, history, evidence, context, and graph recursion have reviewed ceilings;
 - the supplied SQLite corpus is immutable and read-only;
 - PostgreSQL stores application run/delivery truth and LangGraph checkpoints;
 - Inngest owns background retries, scheduling, concurrency limits, and side-effect sequencing.
@@ -51,6 +55,16 @@ The current platform provides:
 
 The implementation uses the current `agents.sessions.setStatus` API. It does not use the legacy
 `assistant.threads.*` methods or Bolt's older Assistant class.
+
+### Manifest import observation
+
+Saving a manifest with an HTTPS request URL does not always verify that URL automatically. Slack
+can save the configuration while showing a banner with **Click here to verify**; the operator must
+use that action while the local tunnel and Slack ingress are running. Once verification succeeds,
+the saved manifest settings are applied. The dashboard can also warn that an Agent View should
+subscribe to `message.im` or `app_home_opened`; this application intentionally supports invited
+channel threads rather than direct messages or App Home, so the warning is non-blocking for this
+product scope.
 
 ## Progress and final-answer evolution
 
@@ -187,6 +201,44 @@ is:
 The classifier is deliberately behind Inngest instead of Slack's acknowledgement path. Explicit
 mentions do not pay for this classifier. The `explicit_mentions_only` configuration remains a
 product-policy switch, not a compatibility path.
+
+### Explicit recovery after a suppressed follow-up
+
+End-to-end testing found that an ordinary thread reply can reasonably be classified `uncertain`,
+which correctly prevents an unsolicited answer but can make a later short explicit mention appear
+to lack the immediately preceding question. The repair preserves the conservative responder policy:
+only a later explicit mention recovers up to three preceding suppressed human messages (4,000
+characters) as labelled, untrusted context. The explicit mention remains authoritative. This is
+not a transcript replay and does not change the policy for unmentioned replies.
+
+## Comparative retrieval investigation
+
+An end-to-end comparative question about the customer most at risk from a cheaper tactical
+competitor initially produced a plausible but incorrect candidate. The tool-call budget was not
+the binding problem: the planner already made multiple lexical searches. The issue was that search
+results from different planned queries were globally sorted by SQLite BM25 score. Scores from
+different queries are not a meaningful common ranking, so a broad competitor query could crowd out
+the milestone evidence needed to compare another candidate.
+
+The retrieval merger now keeps each planned query's best unique artifact before admitting lower
+ranked results from any query. The planner is instructed to make distinct risk and milestone
+queries for comparative or superlative questions, and evidence grading rejects a winner supported
+only by one candidate's documents. This keeps model-directed query planning and bounded refinement
+while avoiding an unbounded autonomous loop.
+
+The next evaluation is not to assume a vector database will help. Add comparative paraphrases and
+distractor-candidate cases to a separate robustness suite, then compare: (1) the diversified
+lexical merger, (2) any changed planning prompt or model, and only if retrieval recall remains the
+failure, (3) a hybrid semantic retrieval candidate. Record answer correctness, required-artifact
+recall per planned query, tool calls, latency, and estimated cost; vary one major factor at a time.
+
+## Answer display observation
+
+Artifact IDs remain internal provenance used by grounding checks, persistence, and evaluation, but
+they are not useful by default in a conversational Slack reply. The planner now enables inline
+citations and the Sources list only when the user directly asks for sources, citations, evidence,
+provenance, or supporting documents. This keeps an answer concise while allowing a user to request
+the exact supporting records.
 
 ## Greeting, ambiguity, and scope investigation
 
@@ -473,7 +525,7 @@ The current local state footprint is:
   history, evidence, intermediate draft, and final answer needed for resume and multi-turn behavior;
 - the local Inngest development server retains event payloads and execution history used for durable
   dispatch and replay;
-- explicitly enabled LangSmith tracing can create a separate remote copy of graph/model inputs and
+  - explicitly enabled tracing can create another copy of graph/model inputs and
   outputs, subject to that project's retention controls;
 - the Slack messages themselves remain governed by the workspace and are not removed by deleting a
   local database volume.
@@ -603,6 +655,68 @@ error lists only missing scope names and tells the operator to update the manife
 never logs or echoes the bot token. This turns a first-user stream/history failure into a setup-time
 diagnostic.
 
+## Prior-turn evidence and source-presentation investigation
+
+The LangGraph checkpoint was already keyed by conversation, but that did not mean every earlier
+turn's evidence remained reusable. Current-run scalar fields such as `evidence` are replaced on the
+next accepted question. History retained question and answer text, which was enough to resolve a
+pronoun but not enough to reproduce the provenance of an earlier answer.
+
+Three approaches were considered:
+
+- detect literal source-request phrases and route them through a dedicated branch;
+- retain every turn's full retrieved evidence inside conversation history;
+- retain compact provenance and let a typed planner select the relevant prior turn.
+
+Literal matching was rejected because follow-up language is open-ended and would accumulate brittle
+special cases. Full evidence retention was rejected because it duplicates untrusted corpus text in
+every checkpoint and grows context with thread length. The compact approach was implemented:
+
+1. each bounded turn stores its clean answer, cited source references, and ordered retrieved IDs;
+2. the planner returns `answer` or `sources_only` plus an optional supplied turn ID;
+3. code rejects unavailable IDs and prevents source-only mode from triggering retrieval;
+4. source-only mode renders saved references without a database or answer-model call;
+5. a substantive contextual turn re-reads prior IDs from immutable SQLite, merges evidence, then
+   retrieves only planned gaps;
+6. Slack always removes internal artifact markers from prose and adds the structured source list
+   only when requested.
+
+This keeps semantic selection model-driven while state access, budgets, and I/O remain
+deterministic. History remains bounded to six turns and does not store evidence content or snippets.
+
+## Global BM25 and diversification investigation
+
+The FTS5 query originally ordered the entire corpus by BM25 and applied the caller's limit. Broad
+cross-account queries could therefore spend most of top-K on one heavily documented scenario. A
+hard final cap was considered but rejected because a legitimate narrow query may have matches in
+only one scenario and still needs to fill its evidence budget.
+
+The repository now performs bounded candidate over-fetch, a configurable per-scenario first pass,
+and BM25-order backfill. The old global BM25 behavior remains available as an explicit control.
+First-pass values one, two, and three are separate fixed-model evaluation profiles; the code does
+not claim that two is optimal before fresh retrieval recall and answer-quality measurements exist.
+
+## Structured failure handling and evaluation reset
+
+The planner previously repaired an invalid structured result once and could then substitute a
+guessed knowledge-search plan. That kept execution moving but converted a schema failure into
+unobservable behavior and could route an action request into retrieval. The fallback was removed.
+A second invalid result now raises a typed failure with accounted model calls and available token
+usage. Invalid prior-turn IDs and exhausted model budgets also fail explicitly. Inngest treats these
+deterministic validation failures as non-retriable, logs stable codes and correlation fields, and
+publishes only the code-owned safe user message through cleanup.
+
+The evaluation harness was changed at the same boundary. Failed repetitions are explicit failed
+attempts, resume requires the complete current contract, and any profile or follow-up error makes
+the matrix command exit non-zero. Old reports and analysis were removed because they mixed unresolved
+runtime issues with broad small-model and budget sweeps. The replacement sequence isolates retrieval
+first, then compares five focused GPT-4/5.5/5.6 profiles with retrieval and action budgets fixed.
+
+A fresh retrieval matrix could not run inside the restricted environment: API calls failed at the
+network boundary, and elevated execution requires separate explicit authorization because the run
+sends benchmark questions and retrieved internal evidence to OpenAI. No defaults were selected from
+that failed attempt, and its generated reports were deleted.
+
 ## Approaches considered and outcome
 
 | Consideration | Outcome | Reason |
@@ -628,6 +742,11 @@ diagnostic.
 | Add RLS without a tenant/principal key | Rejected | It would be cosmetic rather than an authorization control. |
 | Global generated-answer cache | Deferred | No measured need and key/invalidation/authorization are not yet defined. |
 | Add a vector database immediately | Deferred | Existing FTS5 and structured lookup should be evaluated before adding an index pipeline. |
+| Phrase-specific source follow-up branch | Rejected | Typed semantic planning generalizes without accumulating wording-specific graph paths. |
+| Store full evidence in conversation history | Rejected | Compact source references and artifact IDs preserve provenance without duplicating corpus text. |
+| Silently substitute a raw-question plan after schema failure | Removed | A deterministic validation failure must be logged and surfaced through the safe error path. |
+| Hard final per-scenario artifact cap | Rejected | First-pass diversification plus BM25 backfill preserves narrow-query recall. |
+| Broad sweep of many small models | Removed | Stabilize retrieval, then compare five focused profiles with controlled variables. |
 
 ## Validation record and remaining live checks
 

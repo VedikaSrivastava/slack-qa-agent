@@ -51,6 +51,52 @@ def _database(path: Path) -> None:
     connection.close()
 
 
+def _diversification_database(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            scenario_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            content_text TEXT NOT NULL,
+            artifact_type TEXT,
+            metadata_json TEXT
+        );
+        CREATE VIRTUAL TABLE artifacts_fts USING fts5(
+            artifact_id UNINDEXED, title, summary, content_text
+        );
+        CREATE TABLE customers (
+            customer_id TEXT PRIMARY KEY, scenario_id TEXT, name TEXT, region TEXT, country TEXT
+        );
+        CREATE TABLE products (product_id TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE implementations (customer_id TEXT, product_id TEXT);
+        CREATE TABLE scenarios (
+            scenario_id TEXT PRIMARY KEY, pain_point TEXT, trigger_event TEXT
+        );
+        INSERT INTO artifacts VALUES
+            ('a1', 's1', '2026-01-01', 'Dominant one', 'shared outage latency',
+             'shared outage latency dominant', 'ticket', '{}'),
+            ('a2', 's1', '2026-01-02', 'Dominant two', 'shared outage latency',
+             'shared outage latency dominant', 'ticket', '{}'),
+            ('a3', 's1', '2026-01-03', 'Dominant three', 'shared outage latency',
+             'shared outage latency dominant', 'ticket', '{}'),
+            ('a4', 's1', '2026-01-04', 'Dominant four', 'shared outage latency',
+             'shared outage latency dominant', 'ticket', '{}'),
+            ('b1', 's2', '2026-01-01', 'Other one', 'shared', 'shared', 'ticket', '{}'),
+            ('b2', 's2', '2026-01-02', 'Other two', 'shared', 'shared', 'ticket', '{}'),
+            ('c1', 's3', '2026-01-01', 'Third one', 'shared', 'shared', 'ticket', '{}'),
+            ('c2', 's3', '2026-01-02', 'Third two', 'shared', 'shared', 'ticket', '{}');
+        INSERT INTO artifacts_fts
+            SELECT artifact_id, title, summary, content_text FROM artifacts;
+        """
+    )
+    connection.commit()
+    connection.close()
+
+
 def test_fts_search_and_batch_read_preserve_provenance(tmp_path: Path) -> None:
     path = tmp_path / "knowledge.sqlite"
     _database(path)
@@ -72,6 +118,58 @@ def test_search_input_is_parameterized(tmp_path: Path) -> None:
     repository.search(SearchKnowledgeInput(query='" OR 1=1 --', limit=3))
 
     assert repository.validate_runtime_schema().artifact_table == "artifacts"
+
+
+def test_fts_search_diversifies_globally_ranked_candidates_by_scenario(tmp_path: Path) -> None:
+    path = tmp_path / "diverse.sqlite"
+    _diversification_database(path)
+    repository = SQLiteKnowledgeRepository(path)
+
+    hits = repository.search(SearchKnowledgeInput(query="shared outage latency", limit=5))
+
+    prefixes = [hit.artifact_id[0] for hit in hits]
+    assert len(hits) == 5
+    assert set(prefixes) == {"a", "b", "c"}
+    assert prefixes.count("a") <= 2
+
+
+def test_fts_search_can_preserve_global_bm25_for_a_control_profile(tmp_path: Path) -> None:
+    path = tmp_path / "global.sqlite"
+    _diversification_database(path)
+    repository = SQLiteKnowledgeRepository(path, fts_first_pass_results_per_scenario=None)
+
+    hits = repository.search(SearchKnowledgeInput(query="shared outage latency", limit=4))
+
+    assert [hit.artifact_id for hit in hits] == ["a1", "a2", "a3", "a4"]
+
+
+@pytest.mark.parametrize(("first_pass", "maximum_dominant"), [(1, 3), (2, 2), (3, 3)])
+def test_fts_scenario_first_pass_is_a_profile_setting(
+    tmp_path: Path,
+    first_pass: int,
+    maximum_dominant: int,
+) -> None:
+    path = tmp_path / f"first-pass-{first_pass}.sqlite"
+    _diversification_database(path)
+    repository = SQLiteKnowledgeRepository(
+        path,
+        fts_first_pass_results_per_scenario=first_pass,
+    )
+
+    hits = repository.search(SearchKnowledgeInput(query="shared outage latency", limit=5))
+
+    assert sum(hit.artifact_id.startswith("a") for hit in hits) <= maximum_dominant
+
+
+def test_fts_search_backfills_when_only_one_scenario_matches(tmp_path: Path) -> None:
+    path = tmp_path / "narrow.sqlite"
+    _diversification_database(path)
+    repository = SQLiteKnowledgeRepository(path)
+
+    hits = repository.search(SearchKnowledgeInput(query="dominant", limit=4))
+
+    assert len(hits) == 4
+    assert all(hit.artifact_id.startswith("a") for hit in hits)
 
 
 def test_missing_fts_schema_fails_instead_of_falling_back(tmp_path: Path) -> None:

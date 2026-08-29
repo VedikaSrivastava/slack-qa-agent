@@ -40,6 +40,7 @@ RUN groupadd --system --gid 10001 app \
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app alembic ./alembic
+COPY --chown=app:app evals ./evals
 COPY --chown=app:app alembic.ini pyproject.toml README.md ./
 RUN mkdir -p /app/data && chown app:app /app/data
 USER app

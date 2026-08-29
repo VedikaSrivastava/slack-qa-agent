@@ -1,12 +1,13 @@
 # QA Agent
 
-A Slack Q&A bot backed by the included read-only SQLite knowledge base. Docker Compose is the recommended reviewer path.
+A Slack Q&A bot backed by the included read-only SQLite knowledge base. It supports grounded
+multi-turn answers, optional source display, and bounded retrieval.
 
 ## Prerequisites
 
 - Git
 - Docker with Compose v2
-- an OpenAI API key with access to `gpt-4.1-mini`
+- an OpenAI API key
 - a Slack workspace where you can create an app and use the Agent feature
 - [ngrok](https://ngrok.com/download) and a free ngrok account
 
@@ -20,19 +21,11 @@ Use [`slack-app-manifest.yaml`](slack-app-manifest.yaml) as the bootstrap manife
 2. Select **From an app manifest**, choose the workspace, select **YAML**, and paste the file.
 3. Create the app, open **OAuth & Permissions**, and select **Install to Workspace**.
 4. Copy the **Bot User OAuth Token** (`xoxb-...`).
-5. Open **Basic Information > App Credentials** and copy the **Signing Secret**.
+5. Open **App Settings > Basic Information > App Credentials** and copy the **Signing Secret**.
 
-The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 5. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
+The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 5. Slack may show Agent View suggestions for `message.im` and `app_home_opened`; they are expected, because this integration supports invited channel mentions rather than direct messages. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
 
 ## 2. Create `.env.local`
-
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env.local
-```
-
-macOS or Linux:
 
 ```bash
 cp .env.example .env.local
@@ -45,15 +38,12 @@ OPENAI_API_KEY=...
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_SIGNING_SECRET=...
 
-# Default: clear unmentioned follow-ups in an agent-owned thread may be handled.
-SLACK_ROUTING_POLICY=agent_owned_thread_follow_ups
-
-# Optional; LangSmith is not required for local use.
-LANGSMITH_TRACING=false
-LANGSMITH_API_KEY=
+# Optional stricter override; omit it to allow clear follow-ups in agent-owned threads.
+# SLACK_ROUTING_POLICY=explicit_mentions_only
 ```
 
-Set `SLACK_ROUTING_POLICY=explicit_mentions_only` to require `@QA Agent` on every turn.
+The code-reviewed default is `agent_owned_thread_follow_ups`. Set the optional override to
+`explicit_mentions_only` to require `@QA Agent` on every turn.
 
 ## 3. Start the stack
 
@@ -62,12 +52,23 @@ If an earlier local checkout created the disposable PostgreSQL volume, reset it 
 ```bash
 docker compose --env-file .env.local down --volumes
 ```
-
 Build and start:
 
 ```bash
 docker compose --env-file .env.local up -d --build
 ```
+
+To inspect local traces, start the observability profile as well:
+
+```bash
+docker compose --env-file .env.local --profile observability up -d --build
+```
+
+Open `http://localhost:3000`, create a local Langfuse project, and put its public and secret keys
+in `.env.local` as `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`. Restart the app after adding the
+keys. Langfuse records the LangGraph/LangChain execution tree, including model calls, retrieval
+steps, latency, token usage, and configured run metadata. The local evaluation JSON remains in
+`evals/reports/`.
 
 Later starts can omit `--build`:
 
@@ -114,17 +115,6 @@ Copy the HTTPS forwarding origin. Port `8001` exposes only `POST /slack/events`;
 
 Keep Compose and ngrok running. Generate the complete manifest with the HTTPS origin from ngrok.
 
-Windows PowerShell:
-
-```powershell
-$publicBaseUrl = "https://<public-tunnel-host>"
-$generatedManifest = docker compose --env-file .env.local exec -T app `
-  python -m knowledge_assistant.integrations.slack.manifest $publicBaseUrl
-$generatedManifest | Set-Clipboard
-```
-
-macOS or Linux:
-
 ```bash
 public_base_url="https://<public-tunnel-host>"
 docker compose --env-file .env.local exec -T app \
@@ -136,8 +126,8 @@ Then:
 
 1. Open **App Manifest** in the Slack app dashboard and select **YAML**.
 2. Replace the bootstrap manifest with the generated output and save it.
-3. Wait for Slack to verify `https://<public-tunnel-host>/slack/events`.
-4. Confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and
+3. In Slack's `request_url` warning, select **Click here to verify** for `https://<public-tunnel-host>/slack/events`; once verification succeeds, Slack has applied the saved manifest changes.
+4. Got to Event Subscriptions and confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and
    `message.groups`.
 5. Complete any reinstall or reauthorization prompt.
 
@@ -149,13 +139,14 @@ Invite the app in each public or private channel where it should answer:
 /invite @QA Agent
 ```
 
-Ask a question:
+and then ask a question:
 
 ```text
 @QA Agent For Verdant Bay, what is the approved live patch window?
 ```
 
-See the [thread/session contract](docs/thread-and-session-model.md) for interaction behavior.
+Replies in the same Slack thread continue the same agent conversation. Mention QA Agent again for
+an explicit follow-up; clear unmentioned follow-ups are handled conservatively.
 
 ## Troubleshooting
 
@@ -207,6 +198,52 @@ Or use Docker:
 docker build --target validation .
 ```
 
+Run the local evaluation in its dedicated container. It does not require Slack credentials,
+LangSmith, PostgreSQL, or a hosted evaluation service:
+
+```bash
+make eval-full PROFILE=balanced-gpt-4.1-mini
+```
+
+The JSON report is written to `evals/reports/` and includes per-case checks plus aggregate case,
+check, latency, tool-call, model-call, and token metrics.
+
+### Local evaluation without Docker
+
+The evaluation graph also runs against an in-process LangGraph checkpointer, so no PostgreSQL
+or Docker is needed. It needs only `OPENAI_API_KEY` (in `--env-file`) and the bundled SQLite
+database. Reports are written to the tracked `evals/reports/` tree so evaluation evidence can be
+reviewed with the submission.
+
+```bash
+# one profile, one suite (choices: smoke | full | derived | multiturn)
+uv run python -m knowledge_assistant.evals run --suite full \
+  --profile balanced-gpt-4.1-mini --env-file .env.local \
+  --output evals/reports/full-balanced-gpt-4.1-mini.json
+
+# compare every model in the matrix over the gold suite, 3 repeats each
+make eval-matrix                       # -> evals/reports/model-matrix-full/{<profile>.json,rollup.json,README.md}
+make eval-matrix SUITE=derived         # derived factual + disposition + robustness suite
+make eval-followup-variants            # responder prompt-variant comparison for follow-up routing
+
+# optional reference-based LLM judge for a finalist head-to-head (adds one judge-model call per case)
+uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
+  --profiles balanced-gpt-4.1-mini,split-answer-gpt-4.1 --judge-model gpt-5 --env-file .env.local
+```
+
+`--model-matrix` runs five focused profiles: the GPT-4.1 mini production baseline, GPT-4.1
+answer synthesis, GPT-5.5, GPT-5.6 Terra, and a GPT-5.6 Luna/Sol role split. The comparison
+holds retrieval and action budgets constant. Each report carries the full profile, dataset
+digest, prompt/retrieval versions, and Git commit for reproducibility. `--resume` reuses a
+report only when that evaluation contract and requested repeat count still match.
+
+When dependencies change, regenerate the lockfile at the repository root:
+
+```bash
+uv lock
+uv sync --frozen --all-groups
+```
+
 ## Stop or reset
 
 ```bash
@@ -216,11 +253,3 @@ docker compose --env-file .env.local down
 # Remove the stack and local PostgreSQL data.
 docker compose --env-file .env.local down --volumes
 ```
-
-## Documentation
-
-- [Architecture and request lifecycle](docs/architecture.md)
-- [Slack thread and Agent Session model](docs/thread-and-session-model.md)
-- [Engineering decisions and tradeoffs](docs/decisions-and-tradeoffs.md)
-- [Implementation journal](docs/implementation-journal.md)
-- [Evaluations and LangSmith](docs/evaluations.md)

@@ -1,0 +1,76 @@
+[
+  {
+    "id": "multiturn-verdant-window-then-rollback",
+    "category": "multiturn-pronoun",
+    "prior_turns": ["For Verdant Bay, what is the approved live patch window?"],
+    "question": "And how do we roll back if the validation checks fail?",
+    "reference_answer": "If validation fails, run `orchestrator rollback --target ruleset=<prior_sha>`, which restores the prior ruleset and replays the invalidation hook.",
+    "expected_facts": ["restores the prior ruleset", "replays the invalidation hook"],
+    "expected_commands": ["orchestrator rollback --target ruleset=<prior_sha>"],
+    "expected_source_ids": ["art_fff67d92fe41"],
+    "max_tool_calls": 10,
+    "max_retrieval_rounds": 2
+  },
+  {
+    "id": "multiturn-nordchemica-target-then-credit",
+    "category": "multiturn-pronoun",
+    "prior_turns": ["For NordChemica, what is the 30-day target for actionable alerts per day?"],
+    "question": "And what financial remedy is on the table there?",
+    "reference_answer": "Northstar is offering NordChemica a conditional 6 percent credit tied to the Signal Insights alerting metrics, with legal to approve the exact wording.",
+    "expected_facts": ["6", "credit", "conditional"],
+    "expected_entities": ["NordChemica"],
+    "expected_source_ids": ["art_ffa7143fb822"],
+    "max_tool_calls": 10,
+    "max_retrieval_rounds": 2
+  },
+  {
+    "id": "multiturn-aureum-fields-then-fix",
+    "category": "multiturn-pronoun",
+    "prior_turns": ["What SCIM fields were conflicting at Aureum?"],
+    "question": "And what fast fix did Jin propose so we don't wait on Okta change control?",
+    "reference_answer": "For Aureum, Jin proposed a hot-reloadable Signal Ingest preprocessing rule to normalize the conflicting attributes into one canonical field, plus SCIM tracing to see where approval latency is happening.",
+    "expected_facts": ["hot-reloadable", "preprocessing rule", "canonical", "SCIM tracing"],
+    "expected_entities": ["Aureum"],
+    "expected_source_ids": ["art_79f625aafa16"],
+    "max_tool_calls": 10,
+    "max_retrieval_rounds": 2
+  },
+  {
+    "id": "multiturn-topic-switch-does-not-carry-context",
+    "category": "multiturn-topic-switch",
+    "prior_turns": ["For Verdant Bay, what is the approved live patch window?"],
+    "question": "Different topic: in the MapleHarvest Quebec pilot, what temporary field mappings are planned in the router transform?",
+    "reference_answer": "For MapleHarvest, the temporary transform maps `txn_id` to `transaction_id` and `total_amount` to `amount_cents`, coerces string values to integers, and preserves `store_id` and `register_id`.",
+    "expected_facts": ["txn_id", "transaction_id", "total_amount", "amount_cents", "store_id", "register_id"],
+    "expected_entities": ["MapleHarvest"],
+    "forbidden_phrases": ["Verdant Bay", "02:00", "orchestrator rollback"],
+    "expected_source_ids": ["art_6c5bb3a4b89f"],
+    "max_tool_calls": 10,
+    "max_retrieval_rounds": 2
+  },
+  {
+    "id": "multiturn-clarification-then-one-word-answer",
+    "category": "multiturn-clarification",
+    "prior_turns": ["What is the approved live patch window?"],
+    "question": "Verdant Bay",
+    "reference_answer": "For Verdant Bay, the approved live patch window is 2026-03-24, 02:00 to 04:00 local time.",
+    "expected_facts": ["02:00", "04:00"],
+    "expected_entities": ["Verdant Bay"],
+    "expected_dates": ["2026-03-24"],
+    "expected_source_ids": ["art_fff67d92fe41"],
+    "max_tool_calls": 10,
+    "max_retrieval_rounds": 2
+  },
+  {
+    "id": "multiturn-source-request-reuses-prior-answer",
+    "category": "multiturn-source-follow-up",
+    "prior_turns": ["For Verdant Bay, what is the approved live patch window?"],
+    "question": "What sources did you use for that answer?",
+    "reference_answer": "Here are the sources I used for that answer.",
+    "expected_source_ids": ["art_fff67d92fe41"],
+    "expected_show_sources": true,
+    "max_tool_calls": 0,
+    "max_model_calls": 2,
+    "max_retrieval_rounds": 0
+  }
+]

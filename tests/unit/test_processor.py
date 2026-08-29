@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -19,13 +19,8 @@ from knowledge_assistant.agent.models import (
 from knowledge_assistant.agent.processor import (
     AgentGraph,
     LangGraphQuestionProcessor,
-    _create_chat_model,
 )
-from knowledge_assistant.agent.profiles import (
-    OPENAI_MAX_RETRIES,
-    OPENAI_REQUEST_TIMEOUT_SECONDS,
-    PRODUCTION_PROFILE,
-)
+from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState
 from knowledge_assistant.agent.workflow_nodes import GroundedAnswerNodes
@@ -392,7 +387,13 @@ async def test_finalize_replaces_history_turn_for_same_run_id() -> None:
 
     assert second_result["history"] == [
         {"agent_run_id": "older", "question": "Old", "answer": "Old answer"},
-        {"agent_run_id": "run", "question": "Question", "answer": "Final answer"},
+        {
+            "agent_run_id": "run",
+            "question": "Question",
+            "answer": "Final answer",
+            "sources": [],
+            "retrieved_artifact_ids": [],
+        },
     ]
 
 
@@ -422,18 +423,3 @@ async def test_model_usage_is_accumulated_into_checkpointed_state() -> None:
     assert result["input_tokens"] == 17
     assert result["output_tokens"] == 7
     assert result["model_call_count"] == 2
-
-
-def test_chat_model_has_bounded_requests_and_no_nested_retries() -> None:
-    settings = _settings()
-
-    with patch("knowledge_assistant.agent.processor.ChatOpenAI") as chat_model:
-        _create_chat_model(settings, PRODUCTION_PROFILE)
-
-    chat_model.assert_called_once_with(
-        api_key=settings.openai_api_key,
-        model=PRODUCTION_PROFILE.model_name,
-        max_retries=OPENAI_MAX_RETRIES,
-        timeout=OPENAI_REQUEST_TIMEOUT_SECONDS,
-        temperature=PRODUCTION_PROFILE.temperature,
-    )

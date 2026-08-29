@@ -352,6 +352,7 @@ class SlackTurn(Base):
     slack_message_ts: Mapped[str] = mapped_column(String(64), nullable=False)
     message_ts_value: Mapped[Decimal] = mapped_column(Numeric(30, 6), nullable=False)
     slack_thread_ts: Mapped[str] = mapped_column(String(64), nullable=False)
+    message_text: Mapped[str] = mapped_column(Text, nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(512), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(

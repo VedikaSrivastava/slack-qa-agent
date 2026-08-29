@@ -101,6 +101,28 @@ same global model-capacity constraint used by question processing.
 responding into human conversation. The classification adds one bounded model call only for an
 ordinary message in an already agent-owned thread; explicit mentions bypass it.
 
+### Classifier cost and noisy threads
+
+The current implementation does not use a separate cheaper routing model: the responder judge uses
+the active production profile, currently `gpt-4.1-mini`. It sends a fixed routing prompt, the new
+message (at most 8,000 characters), and only an optional latest clarification question—never the
+whole Slack thread. A normal candidate makes one short structured-output call; Inngest may retry a
+failed classifier function at most twice. Explicit mentions cost no classifier call.
+
+At the published `gpt-4.1-mini` text rates of $0.40 per million input tokens and $1.60 per million
+output tokens, a representative 500-input-token / 10-output-token routing decision is about
+$0.000216 (roughly 0.02 cents). Actual cost depends on message length, language tokenization,
+retries, and the configured profile; the [OpenAI model page](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
+is the source of truth for current pricing.
+
+Rambling is deliberately not treated as a transcript to keep sending to the model. The classifier
+sees only the candidate message and can remain silent. The answer workflow retains at most six
+finalized semantic turns, while explicit recovery includes no more than three suppressed human
+messages and 4,000 characters. Older discussion falls out of model context rather than increasing
+cost indefinitely. Users should restate the relevant question or start a new thread when context
+has drifted; a future production policy could add an aggregate token cap or a user-confirmed
+summary, but neither should silently replace the current bounded evidence-first behavior.
+
 ## Thread-scoped conversations and sessions
 
 **Decision:** use workspace, channel, and root thread timestamp as the conversation identity for
@@ -128,6 +150,35 @@ keeps normal knowledge questions at the same model-call count.
 code-owned, do not make knowledge claims, and bypass retrieval/citation checks; only knowledge
 questions enter the grounded answer path. Clarification leaves the Agent Session `suspended` until
 the next user turn.
+
+## Typed response modes with deterministic prior-turn reuse
+
+**Decision:** let the structured planner semantically select `answer` or `sources_only` and an
+optional prior-turn ID, then validate and execute that plan in deterministic code.
+
+**Why:** follow-up language is open-ended, so literal source-request phrases and question-specific
+branches do not scale. The model is useful for deciding which earlier topic the user means. It must
+not be responsible for dereferencing arbitrary IDs, deciding budgets, or inventing unavailable
+history. A typed plan keeps that security and reliability boundary explicit.
+
+**Tradeoff:** planner quality can still select the wrong available turn. The bounded history summary
+therefore exposes stable turn IDs, questions, and provenance availability, while code rejects IDs
+that were not supplied. A new execution behavior must extend the reviewed schema; it cannot appear
+silently from free-form model text.
+
+## Compact per-turn provenance instead of checkpointed evidence copies
+
+**Decision:** retain the clean answer, cited source references, and ordered retrieved artifact IDs
+for each bounded conversation turn. Do not retain full evidence or snippets in turn history.
+
+**Why:** source-only follow-ups need provenance, and contextual follow-ups need a reliable bridge
+back to evidence. IDs provide that bridge without multiplying knowledge-base text across every
+checkpoint. Deterministically re-reading those IDs from immutable SQLite restores trusted evidence
+and permits gap retrieval.
+
+**Tradeoff:** a later source-only request can show only sources actually saved for the selected
+turn. If an artifact disappears in a future mutable corpus, contextual reuse must treat the missing
+read as an evidence gap rather than trusting the historical answer.
 
 ## Inngest for durable background work
 
@@ -254,6 +305,35 @@ SQL to the model.
 vector database should be introduced only if measured evaluations show that the added indexing,
 deployment, and consistency costs improve the target cases.
 
+### Bounded scenario-first diversification
+
+**Decision:** compare global BM25 with bounded candidate over-fetching and a configurable
+per-scenario first pass, followed by BM25-order backfill.
+
+**Why:** global BM25 can let one heavily documented scenario occupy most of top-K for a broad
+cross-account question. A first pass improves coverage, while backfill prevents a hard per-scenario
+cap from starving a legitimate narrow query.
+
+**Tradeoff:** the first-pass number is not assumed to be universally correct. Global BM25 and
+values one, two, and three are fixed-model retrieval profiles. Retrieval recall, citation recall,
+answer correctness, action counts, latency, and cost must select the default; the official seven
+cases remain immutable and robustness cases remain separate.
+
+### Query-diverse comparison evidence
+
+**Decision:** let the model plan several concise retrieval queries, but merge results round-robin
+by planned query rather than globally sorting BM25 scores from unrelated queries.
+
+**Why:** a comparative question often needs different evidence dimensions, such as competitor risk
+and a promised milestone. SQLite scores are meaningful within a query, not across differently
+worded queries. Preserving each query's strongest unique result makes the final evidence set more
+representative without increasing the configured tool-call budget.
+
+**Tradeoff:** this can retain a weaker result from one query instead of another result from a highly
+productive query. Evidence grading and one bounded refinement remain responsible for identifying
+gaps. A hybrid/vector retrieval change requires a measured robustness-suite recall improvement,
+not this one failure alone.
+
 The original delivery archive and extracted database are retained under `data/` for simple setup
 and clear provenance. SQLite `-wal` and `-shm` runtime sidecars are ignored rather than committed.
 Docker copies only the main database into the validation stage so the supplied-schema integration
@@ -270,6 +350,12 @@ variable.
 
 **Tradeoff:** unusually broad questions can exhaust the configured budgets and return insufficient
 evidence. Profiles can be compared through experiments before any production budget is changed.
+
+The eight-call retrieval ceiling represents the longest configured two-round path: five initial
+calls and three refinement calls. Reusing prior evidence consumes one of those calls and reduces new
+search fan-out. The nine-call model ceiling covers the longest legal path including one structured
+plan repair and one answer repair. These are honest safety ceilings, not targets the agent is
+encouraged to spend.
 
 ## Evidence-first generation and explicit grounding checks
 
@@ -299,18 +385,16 @@ an `INNGEST_BASE_URL` value alone is only configuration. The application `/ready
 only the knowledge-file and PostgreSQL probes it actually performs, and the Compose dependency is a
 startup ordering control rather than continuous failover.
 
-## Code-defined versions and optional LangSmith tracing
+## Code-defined versions and optional local Langfuse tracing
 
 **Decision:** keep model names, prompt/retrieval versions, and agent budgets in reviewed code.
-Require LangSmith only for hosted dataset and experiment commands; keep runtime tracing off by
-default.
+Keep runtime tracing optional and local evaluation independent of the tracing backend.
 
-**Why:** a checkout is self-contained without access to a private LangSmith prompt or project.
+**Why:** a checkout is self-contained without access to a private hosted prompt or trace project.
 Traces are useful evidence, but the application must not depend on them to answer Slack questions.
 
-**Tradeoff:** changing a model or prompt requires a code review and deployment. Evaluators without
-LangSmith access can still run the local suite, but they cannot see hosted experiment history unless
-it is shared separately.
+**Tradeoff:** changing a model or prompt requires code review and deployment. Local JSON reports are
+portable, while optional Langfuse traces remain in the developer's configured environment.
 
 ## No answer cache without evidence that it helps
 
@@ -333,6 +417,13 @@ tests should determine whether it remains enabled. Results must never cross auth
 ## Current limitations
 
 - Retrieval is intentionally lexical and schema-aware rather than semantic/vector-based.
+- The production FTS first-pass value is still a code-reviewed candidate, not a measured winner;
+  fresh retrieval and robustness matrices remain pending live API/data-transfer authorization.
+- The model semantically selects among supplied prior turns and can choose the wrong available turn.
+  Code prevents fabricated IDs and unsafe execution, but semantic selection quality still requires
+  multi-turn evaluation.
+- Provenance history is intentionally bounded. A source request for an evicted old turn cannot
+  reconstruct sources unless another durable product record explicitly owns them.
 - The official benchmark contains only seven human-curated cases and should not be treated as broad
   production coverage.
 - Model aliases identify reviewed model families but do not pin provider weights. Saved experiment

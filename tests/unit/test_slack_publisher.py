@@ -495,8 +495,8 @@ async def test_native_stream_shows_sanitized_progress_then_verified_answer() -> 
     retry_timestamp = await _open_surface(publisher, run_id)
     await publisher.publish_progress(run_id, _progress(run_id, 1, ProgressStage.SEARCHING))
     response = AgentResponse(
-        answer="Grounded answer [a1].",
-        sources=[EvidenceReference(artifact_id="a1", title="Runbook")],
+        answer="Grounded answer [art_a1].",
+        sources=[EvidenceReference(artifact_id="art_a1", title="Runbook")],
     )
     prepared = await publisher.prepare_delivery(run_id, response)
     assert await publisher.begin_delivery(run_id) is True
@@ -511,9 +511,32 @@ async def test_native_stream_shows_sanitized_progress_then_verified_answer() -> 
     assert client.starts[0]["chunks"][0]["title"] == "Working on your request"
     assert client.starts[0]["chunks"][1]["title"] == "Understanding the request"
     assert len(client.appends) == 1
-    progress_chunk = client.appends[0]["chunks"][0]
-    assert progress_chunk["title"] == "Searching company knowledge"
-    assert progress_chunk["status"] == "in_progress"
+    prior_chunk, active_chunk = client.appends[0]["chunks"]
+    assert prior_chunk["title"] == "Understanding the request"
+    assert prior_chunk["status"] == "complete"
+    assert active_chunk["title"] == "Searching company knowledge"
+    assert active_chunk["status"] == "in_progress"
+    rendered_answer = client.stops[0]["chunks"][-1]["text"]
+    assert rendered_answer == "Grounded answer."
+    assert "Sources" not in rendered_answer
+
+
+async def test_completed_stream_shows_a_stable_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("knowledge_assistant.integrations.slack.publisher.time.time", lambda: 42)
+    ledger = FakeLedger()
+    client = FakeSlackClient()
+    publisher = _publisher(client, ledger)
+    run_id = uuid4()
+
+    await _open_surface(publisher, run_id)
+    await _deliver(publisher, ledger, run_id, AgentResponse(answer="Grounded answer"))
+
+    assert client.stops[0]["chunks"][1] == {
+        "type": "plan_update",
+        "title": "Answered in 40s",
+    }
     assert len(client.stops) == 1
     assert client.stops[0]["session_status"] == "active"
     final_chunks = client.stops[0]["chunks"]
@@ -523,6 +546,27 @@ async def test_native_stream_shows_sanitized_progress_then_verified_answer() -> 
     assert client.updates == []
     assert ledger.delivery.stream_state is SlackStreamState.STOPPED
     assert ledger.delivery.delivery_status is DeliveryStatus.DELIVERED
+
+
+async def test_progress_promotes_the_newest_stage_and_retains_prior_steps() -> None:
+    ledger = FakeLedger()
+    client = FakeSlackClient()
+    publisher = _publisher(client, ledger)
+    run_id = uuid4()
+    await _open_surface(publisher, run_id)
+
+    assert await publisher.publish_progress(run_id, _progress(run_id, 10, ProgressStage.THINKING))
+    assert await publisher.publish_progress(run_id, _progress(run_id, 20, ProgressStage.SEARCHING))
+
+    first_prior, first_active = client.appends[0]["chunks"]
+    assert first_prior["status"] == "complete"
+    assert first_active["status"] == "in_progress"
+    assert first_active["title"] == "Understanding the question"
+    second_prior, second_active = client.appends[1]["chunks"]
+    assert second_prior["status"] == "complete"
+    assert second_prior["title"] == "Understanding the question"
+    assert second_active["status"] == "in_progress"
+    assert second_active["title"] == "Searching company knowledge"
 
 
 async def test_stream_acknowledgement_retry_reuses_persisted_remote_timestamp() -> None:
@@ -624,7 +668,7 @@ async def test_stream_open_failure_suppresses_progress_and_posts_only_final_answ
 
     assert len(client.starts) == 1
     assert len(client.posts) == 1
-    assert client.posts[0]["blocks"][0]["text"] == "**Answer**\n\nA concise answer."
+    assert client.posts[0]["blocks"][0]["text"] == "A concise answer."
     assert client.updates == []
     statuses = [call["json"]["status"] for method, call in client.api_calls]
     assert statuses == ["processing", "active"]
@@ -703,6 +747,7 @@ async def test_long_answer_is_ordered_and_retains_escaped_sources() -> None:
     run_id = uuid4()
     response = AgentResponse(
         answer="Use <unsafe> & verify. " + ("x" * (MAX_STREAM_MARKDOWN + MAX_SLACK_TEXT)),
+        show_sources=True,
         sources=[EvidenceReference(artifact_id="a>1", title="Runbook <ops> & support")],
     )
     await _open_surface(publisher, run_id)
@@ -724,6 +769,24 @@ async def test_long_answer_is_ordered_and_retains_escaped_sources() -> None:
     assert "`a&gt;1`" in rendered
 
 
+async def test_requested_sources_do_not_duplicate_artifact_ids_in_answer_prose() -> None:
+    ledger = FakeLedger()
+    client = FakeSlackClient()
+    publisher = _publisher(client, ledger)
+    run_id = uuid4()
+    response = AgentResponse(
+        answer="The rollout was paused [art_a].",
+        show_sources=True,
+        sources=[EvidenceReference(artifact_id="art_a", title="Rollout notes")],
+    )
+
+    prepared = await publisher.prepare_delivery(run_id, response)
+    rendered = "".join(prepared.parts)
+
+    assert "The rollout was paused." in rendered
+    assert rendered.count("art_a") == 1
+
+
 async def test_ambiguous_stream_stop_retries_identical_canonical_chunks() -> None:
     ledger = FakeLedger()
     client = FakeSlackClient(fail_first_stop=True)
@@ -740,7 +803,7 @@ async def test_ambiguous_stream_stop_retries_identical_canonical_chunks() -> Non
 
     assert len(client.stops) == 2
     assert client.stops[0]["chunks"] == client.stops[1]["chunks"]
-    assert client.stops[1]["chunks"][-1]["text"] == "**Answer**\n\nCanonical answer"
+    assert client.stops[1]["chunks"][-1]["text"] == "Canonical answer"
     assert client.updates == []
     assert ledger.delivery.stream_state is SlackStreamState.STOPPED
     assert ledger.delivery.delivery_status is DeliveryStatus.DELIVERED
@@ -911,7 +974,7 @@ async def test_user_stop_race_posts_canonical_answer_instead_of_false_acknowledg
 
     assert len(client.stops) == 2
     assert len(client.posts) == 1
-    assert client.posts[0]["text"] == "**Answer**\n\nCanonical answer"
+    assert client.posts[0]["text"] == "Canonical answer"
     assert ledger.delivery.response_ts == "3.1"
     assert ledger.delivery.delivery_status is DeliveryStatus.DELIVERED
 
