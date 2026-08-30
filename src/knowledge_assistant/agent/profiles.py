@@ -91,6 +91,12 @@ SPLIT_ANSWER_GPT_4_1 = replace(
     answer_model_name="gpt-4.1",
 )
 
+BALANCED_GPT_4_1 = replace(
+    BALANCED_GPT_4_1_MINI,
+    name="balanced-gpt-4.1",
+    model_name="gpt-4.1",
+)
+
 BALANCED_GPT_5_5 = replace(
     BALANCED_GPT_4_1_MINI,
     name="balanced-gpt-5.5",
@@ -120,6 +126,7 @@ SPLIT_GPT_5_6_LUNA_SOL = replace(
 MODEL_MATRIX_PROFILES: tuple[AgentProfile, ...] = (
     BALANCED_GPT_4_1_MINI,
     SPLIT_ANSWER_GPT_4_1,
+    BALANCED_GPT_4_1,
     BALANCED_GPT_5_5,
     BALANCED_GPT_5_6_TERRA,
     SPLIT_GPT_5_6_LUNA_SOL,

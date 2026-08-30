@@ -710,7 +710,7 @@ The evaluation harness was changed at the same boundary. Failed repetitions are 
 attempts, resume requires the complete current contract, and any profile or follow-up error makes
 the matrix command exit non-zero. Old reports and analysis were removed because they mixed unresolved
 runtime issues with broad small-model and budget sweeps. The replacement sequence isolates retrieval
-first, then compares five focused GPT-4/5.5/5.6 profiles with retrieval and action budgets fixed.
+first, then compares six focused GPT-4/5.5/5.6 profiles with retrieval and action budgets fixed.
 
 A fresh retrieval matrix could not run inside the restricted environment: API calls failed at the
 network boundary, and elevated execution requires separate explicit authorization because the run
@@ -746,7 +746,7 @@ that failed attempt, and its generated reports were deleted.
 | Store full evidence in conversation history | Rejected | Compact source references and artifact IDs preserve provenance without duplicating corpus text. |
 | Silently substitute a raw-question plan after schema failure | Removed | A deterministic validation failure must be logged and surfaced through the safe error path. |
 | Hard final per-scenario artifact cap | Rejected | First-pass diversification plus BM25 backfill preserves narrow-query recall. |
-| Broad sweep of many small models | Removed | Stabilize retrieval, then compare five focused profiles with controlled variables. |
+| Broad sweep of many small models | Removed | Stabilize retrieval, then compare six focused profiles with controlled variables. |
 
 ## Validation record and remaining live checks
 

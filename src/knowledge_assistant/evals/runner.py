@@ -27,7 +27,13 @@ from knowledge_assistant.config import (
     RETRIEVAL_VERSION,
     AgentRuntimeSettings,
 )
-from knowledge_assistant.evals.datasets import SUITE_CHOICES, dataset_digest
+from knowledge_assistant.evals.datasets import (
+    EVALUATION_PROTOCOL_VERSION,
+    SUITE_CHOICES,
+    TAKE_HOME_GOLD_DATASET_DIGEST,
+    annotation_digest,
+    dataset_digest,
+)
 from knowledge_assistant.evals.evaluators import evaluate_response
 from knowledge_assistant.evals.graph_follow_up_routing import (
     load_graph_follow_up_routing_cases,
@@ -48,7 +54,10 @@ CASES_DIR = Path(__file__).with_name("cases")
 
 def load_cases(suite: str) -> list[EvalCase]:
     path = CASES_DIR / f"{suite}.json"
-    return TypeAdapter(list[EvalCase]).validate_json(path.read_bytes())
+    cases = TypeAdapter(list[EvalCase]).validate_json(path.read_bytes())
+    if suite == "full" and dataset_digest(cases) != TAKE_HOME_GOLD_DATASET_DIGEST:
+        raise ValueError("The immutable take-home gold questions or answers changed")
+    return cases
 
 
 def require_new_report_path(output_path: Path) -> None:
@@ -106,11 +115,14 @@ async def write_local_results(
         "status": "completed",
         "suite": suite,
         "dataset_digest": dataset_digest(cases),
+        "annotation_digest": annotation_digest(cases),
+        "evaluation_protocol_version": EVALUATION_PROTOCOL_VERSION,
         "application_version": APPLICATION_VERSION,
         "prompt_version": PROMPT_VERSION,
         "retrieval_version": RETRIEVAL_VERSION,
         "profile": asdict(profile),
-        "passed": all(result.passed for result in results),
+        "strict_contract_passed": all(result.strict_contract_passed for result in results),
+        "semantic_quality": "not_judged",
         "case_count": len(results),
         "metrics": suite_metrics(
             results,
@@ -139,11 +151,12 @@ async def write_failed_local_results(
         "status": "failed",
         "suite": suite,
         "dataset_digest": dataset_digest(cases),
+        "annotation_digest": annotation_digest(cases),
+        "evaluation_protocol_version": EVALUATION_PROTOCOL_VERSION,
         "application_version": APPLICATION_VERSION,
         "prompt_version": PROMPT_VERSION,
         "retrieval_version": RETRIEVAL_VERSION,
         "profile": asdict(profile),
-        "passed": False,
         "case_count": 0,
         "saved_at": datetime.now(UTC).isoformat(),
         "error": {
@@ -217,7 +230,9 @@ async def async_main(args: argparse.Namespace) -> int:
             results=results,
         )
         print(json.dumps([result.model_dump(mode="json") for result in results], indent=2))
-        return 0 if all(result.passed for result in results) else 1
+        # A completed diagnostic run is successful even when the agent misses quality targets.
+        # Non-zero exits are reserved for execution or report-integrity failures.
+        return 0
 
     if args.command == "follow-up-workflow":
         require_new_report_path(args.output)

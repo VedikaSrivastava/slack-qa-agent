@@ -1,9 +1,8 @@
 """Aggregate one list of :class:`EvalResult` into the numbers the reports compare on.
 
 Shared by the single-run CLI (``evals run``) and the multi-profile matrix so both report the
-same fields with the same definitions: accuracy, per-check pass rates, action cost (tool and
-model calls), token cost in dollars, latency percentiles, response length, and a small
-reliability block.
+same fields with the same definitions. Lexical, evidence, and operational diagnostics remain
+separate; semantic answer quality is reported only by the reference-based judge.
 """
 
 from __future__ import annotations
@@ -15,13 +14,20 @@ from knowledge_assistant.evals.pricing import PRICES, PRICES_CAPTURED_AT, estima
 
 # Budget/quality checks whose failure means "the agent worked past its allowance or gave up",
 # as opposed to simply getting a fact wrong.
-_BUDGET_CHECK_NAMES = frozenset(
-    {"tool_call_budget", "retrieval_round_budget", "evidence_sufficiency"}
-)
+_BUDGET_CHECK_NAMES = frozenset({"tool_call_budget", "retrieval_round_budget", "model_call_budget"})
 
 
 def _failed_check_names(result: EvalResult) -> set[str]:
     return {check.name for check in result.checks if not check.passed}
+
+
+def _check_scores(results: list[EvalResult], name: str) -> list[float]:
+    return [
+        check.score
+        for result in results
+        for check in result.checks
+        if check.name == name and check.score is not None
+    ]
 
 
 def _split_model_cost_usd(
@@ -104,39 +110,91 @@ def suite_metrics(
     budget_exceeded = sum(
         1 for result in results if _failed_check_names(result) & _BUDGET_CHECK_NAMES
     )
-    insufficient = sum(
-        1 for result in results if "evidence_sufficiency" in _failed_check_names(result)
+    answerability_failures = sum(
+        1 for result in results if "answerability_behavior" in _failed_check_names(result)
     )
 
-    # Fragment-level gold-label recall. `check_pass_rates["facts"]` is "every fragment matched"
-    # and collapses to ~0 on multi-fragment cases; this is "fraction of fragments matched",
-    # which ranks models even when none score a perfect case.
-    hit_groups = sorted({group for result in results for group in result.deterministic_hits})
-    label_hit_rates: dict[str, float | None] = {}
+    # Lexical anchors are candidate-authored diagnostics, not a semantic accuracy score. Report
+    # both a per-case macro average and a fragment-weighted micro average so label-heavy cases do
+    # not silently dominate the headline diagnostic.
+    hit_groups = sorted({group for result in results for group in result.lexical_hits})
+    group_micro_coverage: dict[str, float | None] = {}
     for group in hit_groups:
         matched = sum(
-            result.deterministic_hits[group].matched
-            for result in results
-            if group in result.deterministic_hits
+            result.lexical_hits[group].matched for result in results if group in result.lexical_hits
         )
         total = sum(
-            result.deterministic_hits[group].total
-            for result in results
-            if group in result.deterministic_hits
+            result.lexical_hits[group].total for result in results if group in result.lexical_hits
         )
-        label_hit_rates[group] = matched / total if total else None
-    all_matched = sum(
-        hit.matched for result in results for hit in result.deterministic_hits.values()
-    )
-    all_total = sum(hit.total for result in results for hit in result.deterministic_hits.values())
+        group_micro_coverage[group] = matched / total if total else None
+    lexical_coverage_by_case: dict[str, list[float]] = {}
+    for result in results:
+        matched = sum(hit.matched for hit in result.lexical_hits.values())
+        total = sum(hit.total for hit in result.lexical_hits.values())
+        if total:
+            lexical_coverage_by_case.setdefault(result.case_id, []).append(matched / total)
+    per_case_lexical_coverage: dict[str, float] = {
+        case_id: sum(repeat_coverages) / len(repeat_coverages)
+        for case_id, repeat_coverages in lexical_coverage_by_case.items()
+    }
+    all_matched = sum(hit.matched for result in results for hit in result.lexical_hits.values())
+    all_total = sum(hit.total for result in results for hit in result.lexical_hits.values())
 
+    check_score_means: dict[str, float | None] = {}
+    for name in check_names:
+        scores = _check_scores(results, name)
+        if scores:
+            check_score_means[name] = _mean(scores)
+    citation_coverage = _check_scores(results, "diagnostic_citation_coverage")
+    retrieval_coverage = _check_scores(results, "diagnostic_retrieval_coverage")
+    applicable_content_outcomes = [
+        result.content_exact_passed for result in results if result.content_exact_passed is not None
+    ]
+    applicable_safety_outcomes = [
+        result.safety_passed for result in results if result.safety_passed is not None
+    ]
     return {
         "case_count": count,
-        "case_pass_rate": (sum(result.passed for result in results) / count if count else 0.0),
+        "strict_contract_pass_rate": (
+            sum(result.strict_contract_passed for result in results) / count if count else 0.0
+        ),
+        "scope_pass_rates": {
+            "content_exact": (
+                sum(applicable_content_outcomes) / len(applicable_content_outcomes)
+                if applicable_content_outcomes
+                else None
+            ),
+            "evidence": (
+                sum(result.evidence_passed for result in results) / count if count else 0.0
+            ),
+            "operations": (
+                sum(result.operational_passed for result in results) / count if count else 0.0
+            ),
+            "safety": (
+                sum(applicable_safety_outcomes) / len(applicable_safety_outcomes)
+                if applicable_safety_outcomes
+                else None
+            ),
+        },
+        "scope_applicable_case_counts": {
+            "content_exact": len(applicable_content_outcomes),
+            "evidence": count,
+            "operations": count,
+            "safety": len(applicable_safety_outcomes),
+        },
         "check_pass_rates": check_pass_rates,
-        "label_hit_rates": label_hit_rates,
-        "label_hit_rate_overall": all_matched / all_total if all_total else None,
-        "per_case_pass": {result.case_id: result.passed for result in results},
+        "check_score_means": check_score_means,
+        "lexical_content_coverage": {
+            "macro_per_case": _mean(list(per_case_lexical_coverage.values())),
+            "micro": all_matched / all_total if all_total else None,
+            "by_group_micro": group_micro_coverage,
+            "per_case": per_case_lexical_coverage,
+        },
+        "diagnostic_source_coverage": {
+            "citation_mean": _mean(citation_coverage),
+            "retrieval_mean": _mean(retrieval_coverage),
+        },
+        "per_case_contract": {result.case_id: result.strict_contract_passed for result in results},
         "latency_ms": {
             "p50": _percentile(durations, 0.50),
             "p95": _percentile(durations, 0.95),
@@ -191,8 +249,10 @@ def suite_metrics(
             "words_max": max(answer_words) if answer_words else None,
         },
         "reliability": {
-            "passed_cases": sum(result.passed for result in results),
+            "strict_contract_passed_cases": sum(
+                result.strict_contract_passed for result in results
+            ),
             "budget_exceeded_cases": budget_exceeded,
-            "insufficient_evidence_cases": insufficient,
+            "answerability_behavior_failed_cases": answerability_failures,
         },
     }

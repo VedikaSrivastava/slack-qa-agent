@@ -78,6 +78,24 @@ def test_langfuse_is_enabled_only_when_both_keys_are_present() -> None:
     assert settings.langfuse_enabled is True
 
 
+@pytest.mark.parametrize(
+    ("public_key", "secret_key"),
+    [("lf_pk_test", None), (None, "lf_sk_test"), ("   ", "lf_sk_test")],
+)
+def test_partial_langfuse_configuration_fails_fast(
+    public_key: str | None,
+    secret_key: str | None,
+) -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        AgentRuntimeSettings(
+            _env_file=None,
+            openai_api_key="test-key",
+            database_url="postgresql+asyncpg://user:password@postgres/test",
+            langfuse_public_key=public_key,
+            langfuse_secret_key=secret_key,
+        )
+
+
 def test_invalid_log_level_fails_instead_of_defaulting() -> None:
     with pytest.raises(ValidationError, match="log_level"):
         AgentRuntimeSettings(

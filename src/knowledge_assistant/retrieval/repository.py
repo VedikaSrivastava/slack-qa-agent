@@ -11,6 +11,7 @@ from typing import cast
 from knowledge_assistant.retrieval.database import open_read_only_database
 from knowledge_assistant.retrieval.models import (
     AccountLookupInput,
+    AccountLookupResult,
     EvidenceItem,
     JsonValue,
     ReadArtifactsInput,
@@ -130,7 +131,7 @@ def _build_account_lookup_query(request: AccountLookupInput) -> tuple[str, list[
         + " AND ".join(filter_clauses)
         + """
         )
-        SELECT *
+        SELECT *, COUNT(*) OVER () AS _matched_account_count
         FROM ranked_accounts
         WHERE _artifact_rank = 1
         ORDER BY _customer_name, artifact_id
@@ -178,7 +179,13 @@ class SQLiteKnowledgeRepository:
             schema = self._require_schema(connection)
             placeholders = ",".join("?" for _ in request.artifact_ids)
             rows = connection.execute(
-                f"SELECT * FROM artifacts WHERE artifact_id IN ({placeholders})",
+                (
+                    "SELECT a.*, "
+                    "(SELECT c.name FROM customers AS c "
+                    "WHERE c.scenario_id = a.scenario_id "
+                    "ORDER BY c.customer_id LIMIT 1) AS _customer_name "
+                    f"FROM artifacts AS a WHERE a.artifact_id IN ({placeholders})"
+                ),
                 request.artifact_ids,
             ).fetchall()
 
@@ -195,7 +202,7 @@ class SQLiteKnowledgeRepository:
             evidence.append(EvidenceItem(**hit.model_dump(), content=content))
         return evidence
 
-    def lookup_accounts(self, request: AccountLookupInput) -> list[EvidenceItem]:
+    def lookup_accounts(self, request: AccountLookupInput) -> AccountLookupResult:
         """Return one representative artifact per account using parameterized joins."""
 
         query, query_parameters = _build_account_lookup_query(request)
@@ -220,8 +227,19 @@ class SQLiteKnowledgeRepository:
                 separators=(",", ":"),
             )[:MAX_STRUCTURED_EVIDENCE_CHARS]
             hit = self._to_search_hit(row, schema)
-            representative_evidence.append(EvidenceItem(**hit.model_dump(), content=content))
-        return representative_evidence
+            representative_evidence.append(
+                EvidenceItem(
+                    **hit.model_dump(),
+                    content=content,
+                    retrieval_origin="account_lookup",
+                )
+            )
+        matched_account_count = int(rows[0]["_matched_account_count"]) if rows else 0
+        return AccountLookupResult(
+            evidence=representative_evidence,
+            matched_account_count=matched_account_count,
+            is_truncated=len(representative_evidence) < matched_account_count,
+        )
 
     def _require_schema(self, connection: sqlite3.Connection) -> KnowledgeSchema:
         # The database is immutable for this repository's lifetime, so successful schema validation
@@ -246,14 +264,29 @@ class SQLiteKnowledgeRepository:
             filter_parameters.append(request.filters.artifact_type)
 
         where_clauses = ["artifacts_fts MATCH ?", *filter_clauses]
+        matched_excerpt_expression = (
+            "snippet(artifacts_fts, -1, '', '', ' ... ', 64)"
+            if request.purpose == "comparison_candidates"
+            else "NULL"
+        )
         query = (
-            "SELECT a.*, bm25(artifacts_fts) AS _retrieval_score FROM artifacts_fts "
+            "SELECT a.*, "
+            "(SELECT c.name FROM customers AS c "
+            "WHERE c.scenario_id = a.scenario_id "
+            "ORDER BY c.customer_id LIMIT 1) AS _customer_name, "
+            f"{matched_excerpt_expression} AS _match_excerpt, "
+            "bm25(artifacts_fts) AS _retrieval_score FROM artifacts_fts "
             "JOIN artifacts AS a ON a.artifact_id = artifacts_fts.artifact_id "
             f"WHERE {' AND '.join(where_clauses)} ORDER BY _retrieval_score LIMIT ?"
         )
+        first_pass_results_per_scenario = (
+            1
+            if request.purpose == "comparison_candidates"
+            else self._fts_first_pass_results_per_scenario
+        )
         candidate_limit = (
             request.limit
-            if self._fts_first_pass_results_per_scenario is None
+            if first_pass_results_per_scenario is None
             else min(request.limit * self._fts_candidate_multiplier, MAX_FTS_CANDIDATES)
         )
         candidate_rows = connection.execute(
@@ -263,7 +296,7 @@ class SQLiteKnowledgeRepository:
         return _diversify_fts_rows(
             candidate_rows,
             limit=request.limit,
-            first_pass_results_per_scenario=self._fts_first_pass_results_per_scenario,
+            first_pass_results_per_scenario=first_pass_results_per_scenario,
         )
 
     @staticmethod
@@ -286,11 +319,21 @@ class SQLiteKnowledgeRepository:
 
         keys = set(row.keys())
         raw_score = row["_retrieval_score"] if "_retrieval_score" in keys else None
+        raw_scenario_id = row["scenario_id"] if "scenario_id" in keys else None
+        raw_customer_name = row["_customer_name"] if "_customer_name" in keys else None
+        raw_match_excerpt = row["_match_excerpt"] if "_match_excerpt" in keys else None
+        snippet = (
+            str(raw_match_excerpt)
+            if raw_match_excerpt is not None and str(raw_match_excerpt).strip()
+            else (str(row[schema.summary_column] or "") or content)
+        )
         return SearchHit(
             artifact_id=str(row[schema.id_column]),
+            scenario_id=str(raw_scenario_id) if raw_scenario_id is not None else None,
+            customer_name=str(raw_customer_name) if raw_customer_name is not None else None,
             title=str(row[schema.title_column]),
             artifact_type=str(row[schema.type_column]) if row[schema.type_column] else None,
-            snippet=(str(row[schema.summary_column] or "") or content)[:500],
+            snippet=snippet[:500],
             score=float(raw_score) if raw_score is not None else None,
             metadata=metadata,
         )

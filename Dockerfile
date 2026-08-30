@@ -18,10 +18,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY tests ./tests
 COPY alembic ./alembic
 COPY scripts ./scripts
-COPY AGENTS.md ./AGENTS.md
-COPY docs ./docs
-COPY evals/results/README.md ./evals/results/README.md
-COPY data/README.md ./data/README.md
 # Keep the assignment fixture out of the runtime image, but include it here so the supplied-schema
 # integration test cannot silently skip during image validation.
 COPY data/synthetic_startup.sqlite ./data/synthetic_startup.sqlite
@@ -40,7 +36,6 @@ RUN groupadd --system --gid 10001 app \
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app alembic ./alembic
-COPY --chown=app:app evals ./evals
 COPY --chown=app:app alembic.ini pyproject.toml README.md ./
 RUN mkdir -p /app/data && chown app:app /app/data
 USER app

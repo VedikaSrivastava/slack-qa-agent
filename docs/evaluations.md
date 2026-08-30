@@ -1,85 +1,92 @@
 # Evaluations
 
-The evaluation commands run the same `QuestionProcessor`, LangGraph, prompts, retrieval repository,
-and profile budgets used by Slack. They use an in-process checkpointer, so local evaluation needs
-the bundled SQLite database and an OpenAI API key but not Slack, PostgreSQL, Inngest, or a hosted
-evaluation service.
+Offline evaluation invokes the same `QuestionProcessor`, LangGraph, prompts, retrieval repository,
+and profile budgets used by Slack. It uses an in-process checkpointer, so PostgreSQL, Inngest,
+Slack, and Langfuse are not required. The harness deliberately clears Langfuse credentials even
+when they are present in the selected environment file.
 
-Live evaluation sends benchmark questions, retrieved knowledge-base evidence, and generated answers
-to the selected OpenAI models. Treat that as an explicit data-transfer boundary and obtain the
-appropriate authorization before running it.
+Live evaluation still calls OpenAI. A deterministic `run` sends questions, retrieved evidence, and
+generated answers. A semantic `judge` run additionally sends reference answers to a judge model.
+Treat both as data-transfer boundaries and obtain appropriate authorization. Every judge command
+must include `--confirm-data-transfer`.
 
-## Dataset separation
+## Benchmark boundaries
 
-`src/knowledge_assistant/evals/cases/full.json` is the immutable seven-question official benchmark.
-Runtime code never imports it or its expected artifact IDs. Generated, adversarial, multi-turn,
-prompt-injection, and insufficient-evidence cases remain in separate suites so tuning does not turn
-the official examples into runtime rules.
+The seven question/reference pairs in `src/knowledge_assistant/evals/cases/full.json` are the
+assignment benchmark. Runtime code does not import them or their annotations. Derived, multi-turn,
+adversarial, routing, and insufficient-evidence cases stay in separate candidate-authored suites so
+runtime behavior is not optimized to seven known answers.
 
-Every matrix report records the dataset digest, application version, evaluation protocol, prompt
-and retrieval versions, Git commit, complete profile, repeat count, errors, and timestamps. A
-`--resume` run reuses a profile only when that full contract matches and every requested repeat
-completed without an error.
+Lexical anchors, required customer lists, and `diagnostic_source_ids` are candidate-authored
+annotations. Source IDs are non-exhaustive diagnostics, not assignment gold: another retrieved
+artifact may support the same answer. Required customer recall is a necessary deterministic gate
+for declared exhaustive-set questions, while correct grouping and extra-name precision still need
+manual or semantic review.
 
-## Metrics
+## Success criteria
 
-Measure retrieval independently from answer presentation:
+Candidate changes are selected lexicographically, not by a weighted aggregate:
 
-- retrieval recall: required artifacts appeared anywhere in bounded retrieved evidence;
-- citation recall: the grounded answer cited the required artifacts internally;
-- deterministic fact/entity/date/command checks and overall case pass rate;
-- completed versus attempted repeats and per-case flakiness;
-- tool calls, model calls, retrieval rounds, latency, tokens, and estimated cost;
-- errors, which count as failed attempts and make the matrix command exit non-zero.
+1. Material factual correctness, exact requested values, grounding, correct answerability behavior,
+   and safety.
+2. Completeness across every requested part, including full entity sets and correct grouping.
+3. Reasonable bounded tool/model actions and retrieval rounds.
+4. Latency, cost, and response length only as tie-breakers between equally correct systems.
 
-Artifact markers remain an internal evaluation and grounding contract. Slack hides them unless a
-user requests sources.
+A cheaper, faster, or shorter answer cannot compensate for a factual error or omission. The
+assignment defines no overall pass threshold; the candidate target is 7/7 complete official answers
+without regressions on broader suites.
 
-## Retrieval screening
+The defection-risk case must be reported on two axes. Its assignment reference names BlueHarbor,
+while the corpus contains explicit NoiseGuard, procurement, and remediation-milestone evidence for
+Pioneer Freight. That is a reference mismatch and corpus ambiguity. Runtime code must never force
+BlueHarbor or another benchmark answer.
 
-First hold the model and graph budgets constant and compare retrieval only:
+## Deterministic contract
 
-```bash
-make eval-retrieval-matrix SUITE=full REPEATS=1
-```
+The normal `run` and `matrix` commands report `semantic_quality: not_judged`. Their checks include:
 
-The four profiles compare global BM25 with scenario-diversified first-pass values of one, two, and
-three. Candidate over-fetch remains bounded and deferred candidates backfill in BM25 order. Inspect
-failed traces before choosing a setting. Confirm a promising result on the separate derived and
-multi-turn suites; do not select a default only because it wins the seven official cases.
+- exact commands and dates that the answer must supply;
+- required customer recall for declared exhaustive sets;
+- source attribution and citation integrity;
+- expected answer versus insufficient-evidence behavior;
+- tool, model, and retrieval-round budgets; and
+- case-defined safety checks when applicable.
 
-## Focused model matrix
+`content_exact_passed` is not applicable for cases that declare no exact content gate, so those
+cases do not inflate the content-rate denominator. The evidence contract means that sources are
+present when required, cited IDs belong to retrieved evidence, and answerability behavior matches
+the case. It does not prove claim-level entailment between every answer statement and its citation.
+Candidate lexical/source overlap remains non-gating.
 
-After retrieval is fixed, compare the five code-reviewed model profiles while holding retrieval and
-action budgets constant:
+`strict_contract_passed` means all applicable deterministic gates passed. It is not semantic answer
+correctness. Similarly, a CLI exit code of zero means execution completed and a report was written;
+it is not a quality pass.
 
-```bash
-make eval-matrix SUITE=full REPEATS=3
-make eval-matrix SUITE=derived REPEATS=3
-make eval-matrix SUITE=multiturn REPEATS=3
-```
+## Final take-home snapshot
 
-The focused set is GPT-4.1 mini, a GPT-4.1 answer-role split, GPT-5.5, GPT-5.6 Terra, and a GPT-5.6
-Luna/Sol role split. It intentionally avoids a broad sweep of many small models. Compare answer
-quality, retrieval/citation recall, reliability, latency, tokens, and estimated cost rather than
-ranking on correctness alone.
+The final production-profile report is
+[`takehome-agent-p17-r10-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p17-r10-e13-final-20260829-01.json).
+It records prompt `v17`, retrieval `v10`, evaluation protocol `v13`, and profile
+`balanced-gpt-4.1-mini`:
 
-## Follow-up routing
+- strict contract: 6/7;
+- exact content: 3/4 applicable cases;
+- evidence contract: 7/7;
+- operation contract: 7/7;
+- safety: not applicable, with zero declared safety cases;
+- 28 tool calls and 31 model calls;
+- 173,521 total agent tokens and estimated agent cost of $0.0767848; and
+- latency of 9,949 ms p50 and 19,173 ms p95/max.
 
-Responder routing has a separate suite because deciding whether an unmentioned Slack reply belongs
-to the agent is different from answering a knowledge question:
+The report is `semantic_quality: not_judged`. Interpret it with the manual case review in
+[Evaluation findings](evaluation-findings.md). The prompt-`v16`/retrieval-`v9` run was rejected after
+a 5/7 strict regression. The prompt-`v15`/retrieval-`v8` 6/7 run remains historical evidence, not
+the final snapshot.
 
-```bash
-make eval-followup-variants REPEATS=3
-```
+## Commands and authorization
 
-Track response precision and recall, unwanted interruptions, missed follow-ups, and accepted-answer
-quality. Intentional turns inside one multi-turn case share a thread; independent repetitions use a
-fresh LangGraph thread.
-
-## One-profile diagnostics
-
-Use a single run while investigating a trace or regression:
+The minimal take-home evidence is one official deterministic run plus manual review:
 
 ```bash
 uv run python -m knowledge_assistant.evals run --suite full \
@@ -87,9 +94,54 @@ uv run python -m knowledge_assistant.evals run --suite full \
   --output evals/reports/full-balanced-gpt-4.1-mini.json
 ```
 
-Reports under `evals/reports/` are tracked reviewer evidence. Preserve completed and failed runs;
-use a unique label such as `post-fix-2026-08-29` when prompt, retrieval, dataset, application, or
-evaluation-protocol behavior changes. Single-run commands and new matrices fail if their output
-already exists. `--resume` may extend only a compatible interrupted matrix; incompatible profile
-reports also fail instead of being replaced. Failed single runs record only a stable error code and
-exception class, never raw provider details.
+Derived and multi-turn runs are limited regression checks. They are candidate-authored and tuned,
+not hidden held-out proof:
+
+```bash
+uv run python -m knowledge_assistant.evals run --suite derived \
+  --profile balanced-gpt-4.1-mini --env-file .env.local \
+  --output evals/reports/derived-balanced-gpt-4.1-mini.json
+uv run python -m knowledge_assistant.evals run --suite multiturn \
+  --profile balanced-gpt-4.1-mini --env-file .env.local \
+  --output evals/reports/multiturn-balanced-gpt-4.1-mini.json
+```
+
+Use a model judge only for semantic properties that deterministic checks cannot assess, and only
+after explicit authorization for sending generated answers and references:
+
+```bash
+uv run python -m knowledge_assistant.evals judge --label authorized-finalists --suite full \
+  --profiles balanced-gpt-4.1-mini --judge-model gpt-5 \
+  --env-file .env.local --confirm-data-transfer
+```
+
+Every `evals/reports/candidate-*` directory is unaccepted and outside the documented authorization
+because it contains judge output but no authorization metadata. Preserve these directories as audit
+history, do not quote their rates, and do not treat them as submission evidence. The current
+inventory is listed in `evals/reports/README.md`; this rule also applies to any later `candidate-*`
+artifact.
+
+## Production evaluation
+
+Seven official examples are a take-home benchmark, not a deployment gate. Production needs:
+
+- representative sampled and genuinely held-out sets across question types, segments,
+  answerability, and risk;
+- deterministic checks wherever exact facts, commands, dates, sets, budgets, and routing can be
+  assessed reliably;
+- human-calibrated model judging only for semantic qualities deterministic checks cannot measure;
+- claim-level citation entailment, citation precision, and unsupported-claim tracking;
+- repeated paired runs and variance estimates before selecting prompts, retrieval, or models; and
+- CI regression checks plus monitoring for input/retrieval drift, abstention, errors, latency, and
+  cost.
+
+Production questions or evidence must not be sent to an evaluator or hosted trace service without
+an approved data-handling, retention, and deletion policy.
+
+## Report preservation
+
+Reports record dataset and annotation digests, application/prompt/retrieval/evaluation versions,
+profile, timestamps, status, and per-case results. Preserve successful and failed experiments under
+unique names. Track reviewed, authorized evidence; retain unaccepted artifacts clearly labeled for
+audit. Failed reports contain sanitized error codes and exception classes, never provider bodies or
+credentials.

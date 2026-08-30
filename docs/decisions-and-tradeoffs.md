@@ -337,7 +337,9 @@ not this one failure alone.
 The original delivery archive and extracted database are retained under `data/` for simple setup
 and clear provenance. SQLite `-wal` and `-shm` runtime sidecars are ignored rather than committed.
 Docker copies only the main database into the validation stage so the supplied-schema integration
-test runs, while the runtime image receives that file through a read-only bind mount.
+test runs, while the runtime image receives that file through a read-only bind mount. The runtime
+wheel excludes `knowledge_assistant.evals`, and the runtime stage does not copy tests, evaluation
+datasets/reports, or the evaluation CLI.
 
 ## Bounded LangGraph instead of an open agent loop
 

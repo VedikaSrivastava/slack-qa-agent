@@ -23,7 +23,7 @@ Use [`slack-app-manifest.yaml`](slack-app-manifest.yaml) as the bootstrap manife
 4. Copy the **Bot User OAuth Token** (`xoxb-...`).
 5. Open **App Settings > Basic Information > App Credentials** and copy the **Signing Secret**.
 
-The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 5. Slack may show Agent View suggestions for `message.im` and `app_home_opened`; they are expected, because this integration supports invited channel mentions rather than direct messages. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
+The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 6. Slack may show Agent View suggestions for `message.im` and `app_home_opened`; they are expected, because this integration supports invited channel mentions rather than direct messages. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
 
 ## 2. Create `.env.local`
 
@@ -58,18 +58,6 @@ Build and start:
 docker compose --env-file .env.local up -d --build
 ```
 
-To inspect local traces, start the observability profile as well:
-
-```bash
-docker compose --env-file .env.local --profile observability up -d --build
-```
-
-Open `http://localhost:3000`, create a local Langfuse project, and put its public and secret keys
-in `.env.local` as `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`. Restart the app after adding the
-keys. Langfuse records the LangGraph/LangChain execution tree, including model calls, retrieval
-steps, latency, token usage, and configured run metadata. The local evaluation JSON remains in
-`evals/reports/`.
-
 Later starts can omit `--build`:
 
 ```bash
@@ -94,7 +82,41 @@ Follow logs with:
 docker compose --env-file .env.local logs --follow app slack-ingress migrate inngest postgres
 ```
 
-## 4. Start the HTTPS tunnel
+## 4. Optional: enable Langfuse tracing
+
+Langfuse tracing is optional. The QA agent runs normally without it. To inspect local traces, start
+the self-hosted observability profile:
+
+```bash
+docker compose --env-file .env.local --profile observability up -d --build
+```
+
+Open <http://localhost:3000>, create a local Langfuse organisation and project, and add its public
+and secret keys to `.env.local`:
+
+```dotenv
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+```
+
+Recreate the app container so it receives the new environment values:
+
+```bash
+docker compose --env-file .env.local up -d --force-recreate app
+```
+
+Langfuse records the LangGraph/LangChain execution tree, including model calls, retrieval steps,
+latency, token usage, and configured run metadata. Local evaluation reports remain independent of
+tracing and are written to `evals/reports/`; the offline evaluation harness deliberately disables
+Langfuse even if its keys are present in `.env.local`.
+
+If `LANGFUSE_BASE_URL` points to a hosted Langfuse service, trace payloads leave the application
+environment. They may include user questions, prompt and model/tool inputs, retrieved evidence
+snippets, generated answers, and run metadata. Enable hosted tracing only with explicit approval for
+that data transfer and an accepted access, retention, and deletion policy. Never commit Langfuse
+keys or expose private trace links.
+
+## 5. Start the HTTPS tunnel
 
 Configure ngrok (only once) if needed:
 
@@ -111,7 +133,7 @@ ngrok http 8001
 Copy the HTTPS forwarding origin. Port `8001` exposes only `POST /slack/events`; do not tunnel port
 `8000`. If the ngrok URL changes, regenerate and reapply the manifest in the next step.
 
-## 5. Generate and apply the final manifest
+## 6. Generate and apply the final manifest
 
 Keep Compose and ngrok running. Generate the complete manifest with the HTTPS origin from ngrok.
 
@@ -131,7 +153,7 @@ Then:
    `message.groups`.
 5. Complete any reinstall or reauthorization prompt.
 
-## 6. Invite and test QA Agent
+## 7. Invite and test QA Agent
 
 Invite the app in each public or private channel where it should answer:
 
@@ -198,44 +220,46 @@ Or use Docker:
 docker build --target validation .
 ```
 
-Run the local evaluation in its dedicated container. It does not require Slack credentials,
-LangSmith, PostgreSQL, or a hosted evaluation service:
+Run the official deterministic benchmark directly with `uv`. It uses an in-process checkpointer and
+does not require Docker, Slack credentials, Langfuse, PostgreSQL, or a hosted evaluation service:
 
 ```bash
-make eval-full PROFILE=balanced-gpt-4.1-mini
-```
-
-The JSON report is written to `evals/reports/` and includes per-case checks plus aggregate case,
-check, latency, tool-call, model-call, and token metrics.
-
-### Local evaluation without Docker
-
-The evaluation graph also runs against an in-process LangGraph checkpointer, so no PostgreSQL
-or Docker is needed. It needs only `OPENAI_API_KEY` (in `--env-file`) and the bundled SQLite
-database. Reports are written to the tracked `evals/reports/` tree so evaluation evidence can be
-reviewed with the submission.
-
-```bash
-# one profile, one suite (choices: smoke | full | derived | multiturn)
 uv run python -m knowledge_assistant.evals run --suite full \
   --profile balanced-gpt-4.1-mini --env-file .env.local \
   --output evals/reports/full-balanced-gpt-4.1-mini.json
-
-# compare every model in the matrix over the gold suite, 3 repeats each
-make eval-matrix                       # -> evals/reports/model-matrix-full/{<profile>.json,rollup.json,README.md}
-make eval-matrix SUITE=derived         # derived factual + disposition + robustness suite
-make eval-followup-variants            # responder prompt-variant comparison for follow-up routing
-
-# optional reference-based LLM judge for a finalist head-to-head (adds one judge-model call per case)
-uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
-  --profiles balanced-gpt-4.1-mini,split-answer-gpt-4.1 --judge-model gpt-5 --env-file .env.local
 ```
 
-`--model-matrix` runs five focused profiles: the GPT-4.1 mini production baseline, GPT-4.1
-answer synthesis, GPT-5.5, GPT-5.6 Terra, and a GPT-5.6 Luna/Sol role split. The comparison
-holds retrieval and action budgets constant. Each report carries the full profile, dataset
-digest, prompt/retrieval versions, and Git commit for reproducibility. `--resume` reuses a
-report only when that evaluation contract and requested repeat count still match.
+This live command sends the seven questions, retrieved evidence, and generated answers to OpenAI.
+Run it only with authorization for that transfer. Offline evaluation deliberately disables
+Langfuse. Exit code zero means the run completed and wrote a valid report; it does not mean every
+answer or deterministic gate passed.
+
+The final recorded deterministic snapshot is
+[`takehome-agent-p17-r10-e13-final-20260829-01.json`](evals/reports/takehome-agent-p17-r10-e13-final-20260829-01.json).
+It uses prompt `v17`, retrieval `v10`, and evaluation protocol `v13`: 6/7 strict-contract cases,
+3/4 applicable exact-content cases, and `semantic_quality: not_judged`. See
+[Evaluation findings](docs/evaluation-findings.md) for the manual answer review and metric caveats.
+
+### Optional semantic evaluation: authorization required
+
+A judge run additionally sends generated answers and reference answers to the judge model. Run it
+only with explicit authorization for that expanded transfer, and acknowledge the boundary in the
+command:
+
+```bash
+uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
+  --profiles balanced-gpt-4.1-mini --judge-model gpt-5 \
+  --env-file .env.local --confirm-data-transfer
+```
+
+Judge output is a candidate-defined diagnostic, not an assignment pass threshold. The default
+take-home evidence is the official deterministic run plus manual review. Derived and multi-turn
+suites are limited regression checks, not held-out proof. See
+[Evaluation strategy](docs/evaluations.md) for the complete policy and production evaluation plan.
+
+Every `evals/reports/candidate-*` directory lacks documented authorization metadata and is
+unaccepted. Preserve these artifacts only for audit; do not quote their rates or use them as
+submission evidence.
 
 When dependencies change, regenerate the lockfile at the repository root:
 

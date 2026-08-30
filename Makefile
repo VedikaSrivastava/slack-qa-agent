@@ -1,16 +1,18 @@
 .PHONY: install up down reset logs test lint format format-check typecheck check inspect-db migrate \
-	eval-smoke eval-full eval-follow-up-workflow \
 	eval-local eval-derived-local eval-multiturn-local eval-retrieval-matrix eval-matrix \
-	eval-followup-variants
+	eval-followup-variants eval-judge
 
 PROFILE ?= balanced-gpt-4.1-mini
-ROUTING_PROMPT_VARIANT ?= current
 # Local (Postgres-free) evaluation. Needs only OPENAI_API_KEY in ENV_FILE plus the bundled
 # SQLite database; the graph runs against an in-process LangGraph checkpointer. Reports land in
 # the tracked evals/reports/ tree so completed take-home experiments remain reviewable.
 ENV_FILE ?= .env.local
 REPEATS ?= 3
 SUITE ?= full
+# Override this with a unique value for every preserved experiment. The CLIs refuse to overwrite
+# an existing report or non-empty label directory.
+EVAL_LABEL ?= take-home-evaluation
+CONFIRM_DATA_TRANSFER ?=
 
 install:
 	uv sync --frozen --all-groups
@@ -50,33 +52,31 @@ inspect-db:
 migrate:
 	docker compose --env-file .env.local run --rm migrate
 
-eval-smoke:
-	docker compose --env-file .env.local run --rm eval python -m knowledge_assistant.evals run --suite smoke --profile $(PROFILE) --output /app/evals/reports/smoke-$(PROFILE).json
-
-eval-full:
-	docker compose --env-file .env.local run --rm eval python -m knowledge_assistant.evals run --suite full --profile $(PROFILE) --output /app/evals/reports/full-$(PROFILE).json
-
-eval-follow-up-workflow:
-	docker compose --env-file .env.local run --rm eval python -m knowledge_assistant.evals follow-up-workflow --profile $(PROFILE) --prompt-variant $(ROUTING_PROMPT_VARIANT) --output /app/evals/reports/follow-up-workflow-$(ROUTING_PROMPT_VARIANT)-$(PROFILE).json
-
 # --- Local, Postgres-free evaluation (no Docker) --------------------------------------------
 eval-local:
-	uv run python -m knowledge_assistant.evals run --suite $(SUITE) --profile $(PROFILE) --env-file $(ENV_FILE) --output evals/reports/$(SUITE)-$(PROFILE).json
+	uv run python -m knowledge_assistant.evals run --suite $(SUITE) --profile $(PROFILE) --env-file $(ENV_FILE) --output evals/reports/$(EVAL_LABEL).json
 
 eval-derived-local:
-	uv run python -m knowledge_assistant.evals run --suite derived --profile $(PROFILE) --env-file $(ENV_FILE) --output evals/reports/derived-$(PROFILE).json
+	uv run python -m knowledge_assistant.evals run --suite derived --profile $(PROFILE) --env-file $(ENV_FILE) --output evals/reports/$(EVAL_LABEL).json
 
 eval-multiturn-local:
-	uv run python -m knowledge_assistant.evals run --suite multiturn --profile $(PROFILE) --env-file $(ENV_FILE) --output evals/reports/multiturn-$(PROFILE).json
+	uv run python -m knowledge_assistant.evals run --suite multiturn --profile $(PROFILE) --env-file $(ENV_FILE) --output evals/reports/$(EVAL_LABEL).json
 
-# Focused five-profile model matrix on the gold suite, REPEATS runs each, one rollup report.
+# Semantic take-home score against the assignment answers. This sends questions, retrieved
+# evidence, generated answers, and references to the configured providers. Require an explicit
+# per-command acknowledgement instead of treating ordinary evaluation access as authorization.
+eval-judge:
+	$(if $(filter YES,$(CONFIRM_DATA_TRANSFER)),,$(error Re-run with CONFIRM_DATA_TRANSFER=YES only after the expanded transfer is authorized))
+	uv run python -m knowledge_assistant.evals judge --label $(EVAL_LABEL) --suite $(SUITE) --profiles $(PROFILE) --env-file $(ENV_FILE) --confirm-data-transfer
+
+# Focused deterministic model screen on the gold inputs; semantic selection uses eval-judge.
 eval-matrix:
-	uv run python -m knowledge_assistant.evals matrix --label model-matrix-$(SUITE) --suite $(SUITE) --repeats $(REPEATS) --model-matrix --env-file $(ENV_FILE)
+	uv run python -m knowledge_assistant.evals matrix --label $(EVAL_LABEL) --suite $(SUITE) --repeats $(REPEATS) --model-matrix --env-file $(ENV_FILE)
 
 # Fixed-model retrieval screening: global BM25 control versus first-pass diversification.
 eval-retrieval-matrix:
-	uv run python -m knowledge_assistant.evals matrix --label retrieval-matrix-$(SUITE) --suite $(SUITE) --repeats $(REPEATS) --retrieval-matrix --env-file $(ENV_FILE)
+	uv run python -m knowledge_assistant.evals matrix --label $(EVAL_LABEL) --suite $(SUITE) --repeats $(REPEATS) --retrieval-matrix --env-file $(ENV_FILE)
 
 # Follow-up routing prompt variants across a short profile list.
 eval-followup-variants:
-	uv run python -m knowledge_assistant.evals matrix --label followup-variants --suite smoke --repeats $(REPEATS) --profiles $(PROFILE) --follow-up-variants current,latest_agent_context --env-file $(ENV_FILE)
+	uv run python -m knowledge_assistant.evals matrix --label $(EVAL_LABEL) --suite smoke --repeats $(REPEATS) --profiles $(PROFILE) --follow-up-variants current,latest_agent_context --env-file $(ENV_FILE)

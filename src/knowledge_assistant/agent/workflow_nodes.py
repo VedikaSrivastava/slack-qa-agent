@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Literal, TypedDict, TypeVar, cast
+from typing import Annotated, Literal, TypedDict, TypeVar, cast
 
 import structlog
 from langchain_core.language_models import BaseChatModel
@@ -32,17 +32,32 @@ from knowledge_assistant.agent.state import AgentState, ConversationTurn
 from knowledge_assistant.retrieval.models import (
     MAX_ARTIFACT_BATCH,
     MAX_CONTEXT_CHARS,
+    MAX_SEARCH_QUERY_CHARS,
+    AccountLookupCoverage,
     AccountLookupInput,
     EvidenceItem,
     JsonValue,
     ReadArtifactsInput,
     SearchHit,
     SearchKnowledgeInput,
+    SearchQueryText,
 )
 
 MAX_INITIAL_QUERIES = 3
 MAX_REFINED_QUERIES = 2
 MAX_EVIDENCE_PAYLOAD_CHARS = 32_000
+MAX_EVIDENCE_QUESTION_PART_CHARS = 1_000
+MAX_GROUNDING_ISSUE_CHARS = 1_000
+_RANKED_SELECTION_QUESTION = re.compile(
+    r"\b(?:most|least)\s+(?:likely|at\s+risk|probable|promising)\b"
+    r"|\b(?:highest|lowest|greatest|smallest|strongest|weakest)\b"
+    r"|\b(?:riskiest|safest|cheapest|costliest|largest|fastest|slowest)\b"
+    r"|\btop\s+(?:[\w-]+\s+){0,3}(?:candidate|customer|account|vendor|supplier|risk)\b"
+    r"|\b(?:rank|ranking)\b"
+    r"|\b(?:which|who)\b.{0,120}\b(?:best|worst|better|worse)\b"
+    r"|\b(?:which|who)\b.{0,120}\b(?:more|less)\s+likely\b",
+    flags=re.IGNORECASE,
+)
 INSUFFICIENT_EVIDENCE_ANSWER = "I couldn't answer this from the knowledge base."
 GREETING_ANSWER = (
     "Hi! I can answer questions grounded in the internal knowledge base. "
@@ -105,8 +120,11 @@ class StructuredOutputValidationError(ValueError):
 
 class PromptEvidence(TypedDict):
     artifact_id: str
+    scenario_id: str | None
+    customer_name: str | None
     title: str
     content: str
+    retrieval_origin: Literal["lexical", "search_excerpt", "account_lookup"]
 
 
 class StandaloneQuestion(BaseModel):
@@ -124,8 +142,9 @@ class StandaloneQuestion(BaseModel):
 class RetrievalPlan(BaseModel):
     disposition: QuestionDisposition
     show_sources: bool = False
+    comparison_query: SearchQueryText | None = None
     response_mode: Literal["answer", "sources_only"] = "answer"
-    queries: list[str] = Field(default_factory=list, max_length=MAX_INITIAL_QUERIES)
+    queries: list[SearchQueryText] = Field(default_factory=list, max_length=MAX_INITIAL_QUERIES)
     account_lookup: AccountLookupInput | None = None
     clarification_question: str | None = Field(default=None, min_length=1, max_length=300)
     reuse_turn_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -137,6 +156,31 @@ class RetrievalPlan(BaseModel):
         if any(not query for query in normalized):
             raise ValueError("retrieval queries must contain searchable text")
         return list(dict.fromkeys(normalized))
+
+    @field_validator("comparison_query")
+    @classmethod
+    def normalize_comparison_query(cls, query: str | None) -> str | None:
+        if query is None:
+            return None
+        normalized = " ".join(query.split())
+        if not normalized:
+            raise ValueError("comparison query must contain searchable text")
+        return normalized
+
+    @field_validator("account_lookup", mode="before")
+    @classmethod
+    def discard_empty_account_lookup(cls, value: object) -> object:
+        """Drop an optional model-planned lookup that cannot constrain the database safely."""
+
+        if not isinstance(value, dict):
+            return value
+        scalar_filters = (value.get("region"), value.get("country"), value.get("product"))
+        has_scalar_filter = any(
+            item.strip() if isinstance(item, str) else bool(item) for item in scalar_filters
+        )
+        if has_scalar_filter or value.get("pain_point_terms"):
+            return value
+        return None
 
     @field_validator("clarification_question")
     @classmethod
@@ -154,21 +198,27 @@ class RetrievalPlan(BaseModel):
             if self.clarification_question is not None:
                 raise ValueError("knowledge questions cannot include a clarification question")
             if self.response_mode == "sources_only":
-                if self.queries or self.account_lookup is not None:
+                if self.queries or self.account_lookup is not None or self.comparison_query:
                     raise ValueError("source-only responses cannot trigger retrieval")
                 return self
-            if not self.queries and self.account_lookup is None and self.reuse_turn_id is None:
+            if (
+                not self.queries
+                and self.account_lookup is None
+                and self.reuse_turn_id is None
+                and self.comparison_query is None
+            ):
                 raise ValueError(
-                    "knowledge questions require a query, account filter, or reusable prior turn"
+                    "knowledge questions require a query, comparison query, account filter, "
+                    "or reusable prior turn"
                 )
             return self
         if self.disposition is QuestionDisposition.NEEDS_CLARIFICATION:
             if self.clarification_question is None:
                 raise ValueError("unclear questions require one clarification question")
-            if self.queries or self.account_lookup is not None:
+            if self.queries or self.account_lookup is not None or self.comparison_query:
                 raise ValueError("unclear questions cannot trigger retrieval")
             return self
-        if self.queries or self.account_lookup is not None:
+        if self.queries or self.account_lookup is not None or self.comparison_query:
             raise ValueError("non-knowledge messages cannot trigger retrieval")
         if self.clarification_question is not None:
             raise ValueError("only unclear questions can include a clarification question")
@@ -179,10 +229,26 @@ class RetrievalPlan(BaseModel):
         return self
 
 
+def _supports_comparison_shortlist(question: str) -> bool:
+    """Gate shortlist mode to explicit ranked selection, not every unknown-entity lookup."""
+
+    return _RANKED_SELECTION_QUESTION.search(question) is not None
+
+
+EvidenceQuestionPart = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_EVIDENCE_QUESTION_PART_CHARS),
+]
+
+
 class EvidenceGrade(BaseModel):
-    sufficient: bool
+    supported_parts: list[EvidenceQuestionPart] = Field(max_length=12)
+    missing_parts: list[EvidenceQuestionPart] = Field(max_length=12)
     reason: str = Field(min_length=1, max_length=1_000)
-    refined_queries: list[str] = Field(default_factory=list, max_length=MAX_REFINED_QUERIES)
+    refined_queries: list[SearchQueryText] = Field(
+        default_factory=list,
+        max_length=MAX_REFINED_QUERIES,
+    )
 
     @field_validator("refined_queries")
     @classmethod
@@ -192,16 +258,42 @@ class EvidenceGrade(BaseModel):
             raise ValueError("refined queries must contain searchable text")
         return list(dict.fromkeys(normalized))
 
+    @field_validator("supported_parts", "missing_parts")
+    @classmethod
+    def normalize_question_parts(cls, parts: list[str]) -> list[str]:
+        normalized = [" ".join(part.split()) for part in parts]
+        if any(not part or len(part) > MAX_EVIDENCE_QUESTION_PART_CHARS for part in normalized):
+            raise ValueError(
+                "question parts must be non-empty and at most "
+                f"{MAX_EVIDENCE_QUESTION_PART_CHARS:,} characters"
+            )
+        return list(dict.fromkeys(normalized))
+
     @model_validator(mode="after")
-    def require_queries_when_insufficient(self) -> EvidenceGrade:
-        if not self.sufficient and not self.refined_queries:
-            raise ValueError("insufficient evidence requires at least one refined query")
+    def validate_question_part_partition(self) -> EvidenceGrade:
+        if not self.supported_parts and not self.missing_parts:
+            raise ValueError("evidence grade must classify at least one question part")
+        overlap = {part.casefold() for part in self.supported_parts} & {
+            part.casefold() for part in self.missing_parts
+        }
+        if overlap:
+            raise ValueError("question parts cannot be both supported and missing")
         return self
+
+    @property
+    def is_sufficient(self) -> bool:
+        return not self.missing_parts
+
+
+GroundingIssue = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_GROUNDING_ISSUE_CHARS),
+]
 
 
 class GroundingVerdict(BaseModel):
     valid: bool
-    issues: list[str] = Field(default_factory=list, max_length=8)
+    issues: list[GroundingIssue] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def require_issues_when_invalid(self) -> GroundingVerdict:
@@ -250,8 +342,11 @@ def _evidence_payload(state: AgentState) -> str:
         item = EvidenceItem.model_validate(raw_item)
         candidate = PromptEvidence(
             artifact_id=item.artifact_id,
+            scenario_id=item.scenario_id,
+            customer_name=item.customer_name,
             title=item.title,
             content=item.content,
+            retrieval_origin=item.retrieval_origin,
         )
         candidate_payload = json.dumps(
             [*prompt_evidence, candidate], ensure_ascii=False, separators=(",", ":")
@@ -269,8 +364,11 @@ def _evidence_payload(state: AgentState) -> str:
             midpoint = (lower_bound + upper_bound) // 2
             truncated_candidate = PromptEvidence(
                 artifact_id=item.artifact_id,
+                scenario_id=item.scenario_id,
+                customer_name=item.customer_name,
                 title=item.title,
                 content=item.content[:midpoint],
+                retrieval_origin=item.retrieval_origin,
             )
             truncated_payload = json.dumps(
                 [*prompt_evidence, truncated_candidate],
@@ -287,6 +385,66 @@ def _evidence_payload(state: AgentState) -> str:
         break
 
     return json.dumps(prompt_evidence, ensure_ascii=False, separators=(",", ":"))
+
+
+def _restore_structured_customer_names(
+    answer: str,
+    evidence: list[EvidenceItem],
+) -> str:
+    """Restore canonical spacing/casing for customer names copied from account evidence.
+
+    Structured account retrieval is the authoritative source for the bounded cohort. Models can
+    occasionally concatenate adjacent name tokens while otherwise copying a complete list. This
+    narrow normalization repairs only names present in retrieved structured JSON; it cannot add an
+    account that the answer omitted or substitute an evaluation label.
+    """
+
+    normalized_answer = answer
+    for item in evidence:
+        if item.retrieval_origin != "account_lookup":
+            continue
+        try:
+            payload = json.loads(item.content)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        customer_value: object = payload.get("customer")
+        if not isinstance(customer_value, str):
+            continue
+        customer = customer_value
+        name_parts = customer.split()
+        if len(name_parts) < 2:
+            continue
+        flexible_spacing = r"\s*".join(re.escape(part) for part in name_parts)
+
+        def canonical_name_replacement(_: re.Match[str], canonical_customer: str = customer) -> str:
+            return canonical_customer
+
+        normalized_answer = re.sub(
+            rf"(?<!\w){flexible_spacing}(?!\w)",
+            canonical_name_replacement,
+            normalized_answer,
+            flags=re.IGNORECASE,
+        )
+    return normalized_answer
+
+
+def _account_lookup_coverage_payload(state: AgentState) -> str:
+    """Present deterministic cohort coverage as explicit trusted application metadata."""
+
+    raw_coverage = state.get("account_lookup_coverage")
+    if raw_coverage is None:
+        return json.dumps({"status": "NOT_AVAILABLE"}, separators=(",", ":"))
+    coverage = AccountLookupCoverage.model_validate(raw_coverage)
+    if coverage.purpose == "enumerate_cohort":
+        status = "INCOMPLETE_TRUNCATED" if coverage.is_truncated else "COMPLETE_AND_AUTHORITATIVE"
+    else:
+        status = "MATCHING_SUBSET_ONLY"
+    return json.dumps(
+        {"status": status, **coverage.model_dump(mode="json")},
+        separators=(",", ":"),
+    )
 
 
 def _rank_unique_artifact_ids(hit_groups: list[list[SearchHit]], limit: int) -> list[str]:
@@ -309,20 +467,76 @@ def _rank_unique_artifact_ids(hit_groups: list[list[SearchHit]], limit: int) -> 
     return ranked_ids
 
 
+def _comparison_candidate_excerpts(hit_groups: list[list[SearchHit]]) -> list[EvidenceItem]:
+    """Keep bounded search excerpts for candidate discovery without filling answer context."""
+
+    excerpts: list[EvidenceItem] = []
+    seen_artifact_ids: set[str] = set()
+    for hit in (hit for group in hit_groups for hit in group):
+        if hit.artifact_id in seen_artifact_ids:
+            continue
+        excerpts.append(
+            EvidenceItem(
+                **hit.model_dump(mode="python"),
+                content=hit.snippet,
+                retrieval_origin="search_excerpt",
+            )
+        )
+        seen_artifact_ids.add(hit.artifact_id)
+        if len(excerpts) == MAX_ARTIFACT_BATCH:
+            break
+    return excerpts
+
+
+def _comparison_refinement_queries(
+    state: AgentState,
+    model_queries: list[str],
+) -> list[str]:
+    """Preserve planned follow-up dimensions and guarantee a full-evidence second pass."""
+
+    candidates = [*model_queries, *state.get("search_queries", [])]
+    comparison_query = state.get("comparison_query")
+    if comparison_query is not None:
+        # Repeating the shortlist query with the ordinary evidence purpose is intentional: the
+        # second pass reads full artifacts instead of retaining search-only excerpts.
+        candidates.append(comparison_query)
+
+    queries: list[str] = []
+    for candidate in candidates:
+        normalized = " ".join(candidate.split())[:MAX_SEARCH_QUERY_CHARS]
+        if normalized and normalized not in queries:
+            queries.append(normalized)
+        if len(queries) == MAX_REFINED_QUERIES:
+            break
+    return queries
+
+
 def _merge_evidence(
     existing_evidence: list[EvidenceItem],
     new_evidence: list[EvidenceItem],
     *,
     max_artifacts: int,
 ) -> list[EvidenceItem]:
-    """Merge evidence in discovery order while enforcing global workflow budgets."""
+    """Merge evidence in discovery order, promoting excerpts to full artifacts when found."""
+
+    ordered_evidence = list(existing_evidence)
+    artifact_indexes = {item.artifact_id: index for index, item in enumerate(ordered_evidence)}
+    for item in new_evidence:
+        existing_index = artifact_indexes.get(item.artifact_id)
+        if existing_index is None:
+            artifact_indexes[item.artifact_id] = len(ordered_evidence)
+            ordered_evidence.append(item)
+            continue
+        existing_item = ordered_evidence[existing_index]
+        if (
+            existing_item.retrieval_origin == "search_excerpt"
+            and item.retrieval_origin != "search_excerpt"
+        ):
+            ordered_evidence[existing_index] = item
 
     merged_evidence: list[EvidenceItem] = []
-    seen_artifact_ids: set[str] = set()
     remaining_context_chars = MAX_CONTEXT_CHARS
-    for item in (*existing_evidence, *new_evidence):
-        if item.artifact_id in seen_artifact_ids:
-            continue
+    for item in ordered_evidence:
         if len(merged_evidence) >= max_artifacts or remaining_context_chars <= 0:
             break
 
@@ -332,7 +546,6 @@ def _merge_evidence(
                 update={"content": item.content[:remaining_context_chars]}
             )
         merged_evidence.append(bounded_item)
-        seen_artifact_ids.add(item.artifact_id)
         remaining_context_chars -= len(bounded_item.content)
     return merged_evidence
 
@@ -550,8 +763,7 @@ class GroundedAnswerNodes:
             }
         if not history:
             return {"standalone_question": state["question"], "history": []}
-        model_call_count = self._next_model_call_count(state)
-        parsed, raw_response = await self._invoke_structured(
+        parsed, invocation_update = await self._invoke_structured_with_retry(
             StandaloneQuestion,
             [
                 SystemMessage(content=RESOLVE_QUESTION),
@@ -568,12 +780,12 @@ class GroundedAnswerNodes:
                     )
                 ),
             ],
+            state=state,
         )
         return {
             "standalone_question": parsed.question,
             "history": history,
-            "model_call_count": model_call_count,
-            **_usage_state_update(state, raw_response),
+            **invocation_update,
         }
 
     def route_after_resolution(self, state: AgentState) -> str:
@@ -616,16 +828,32 @@ class GroundedAnswerNodes:
                 input_tokens=invocation_update.get("input_tokens"),
                 output_tokens=invocation_update.get("output_tokens"),
             )
+        comparison_query = (
+            parsed.comparison_query
+            if parsed.comparison_query is not None
+            and _supports_comparison_shortlist(standalone_question)
+            else None
+        )
+        planned_account_lookup = parsed.account_lookup
+        if comparison_query is not None and planned_account_lookup is not None:
+            if planned_account_lookup.purpose == "enumerate_cohort":
+                # A bounded cohort already defines the complete candidate population.
+                comparison_query = None
+            else:
+                # A match filter selects only accounts whose stored pain point matches the input;
+                # that subset cannot establish a superlative over the wider candidate field.
+                planned_account_lookup = None
         update: AgentState = {
             "question_disposition": parsed.disposition,
             "show_sources": parsed.show_sources,
+            "comparison_query": comparison_query,
             "response_mode": parsed.response_mode,
             "reuse_turn_id": parsed.reuse_turn_id,
             "search_queries": parsed.queries[: self._profile.max_initial_queries],
             "account_lookup": cast(
-                dict[str, JsonValue], parsed.account_lookup.model_dump(mode="json")
+                dict[str, JsonValue], planned_account_lookup.model_dump(mode="json")
             )
-            if parsed.account_lookup
+            if planned_account_lookup
             else None,
             **invocation_update,
         }
@@ -698,7 +926,11 @@ class GroundedAnswerNodes:
             reused_evidence,
             max_artifacts=self._profile.max_artifacts,
         )
-        account_evidence, account_lookup_calls = await self._lookup_account_evidence(
+        (
+            account_evidence,
+            account_lookup_calls,
+            account_lookup_coverage,
+        ) = await self._lookup_account_evidence(
             state,
             remaining_tool_calls,
         )
@@ -709,34 +941,75 @@ class GroundedAnswerNodes:
             max_artifacts=self._profile.max_artifacts,
         )
 
-        search_query_cap = (
-            self._profile.max_initial_queries
-            if state.get("retrieval_round_count", 0) == 0
-            else self._profile.max_refined_queries
+        has_candidate_excerpt = any(
+            item.retrieval_origin == "search_excerpt" for item in evidence_before_lexical_read
         )
-        # Reserve one tool call to read full artifacts whenever lexical search can run.
         can_add_lexical_evidence = (
-            len(evidence_before_lexical_read) < self._profile.max_artifacts
-            and sum(len(item.content) for item in evidence_before_lexical_read)
-            <= MAX_CONTEXT_CHARS - 1_000
+            len(evidence_before_lexical_read) < self._profile.max_artifacts or has_candidate_excerpt
+        ) and sum(
+            len(item.content) for item in evidence_before_lexical_read
+        ) <= MAX_CONTEXT_CHARS - 1_000
+        comparison_query = state.get("comparison_query")
+        is_comparison_candidate_round = (
+            comparison_query is not None and state.get("retrieval_round_count", 0) == 0
         )
-        search_query_limit = (
-            min(search_query_cap, max(0, remaining_tool_calls - 1))
-            if can_add_lexical_evidence
-            else 0
-        )
-        search_queries = state.get("search_queries", [])[:search_query_limit]
-        search_hit_groups = await self._search_knowledge(search_queries)
-        ranked_artifact_ids = _rank_unique_artifact_ids(
-            search_hit_groups,
-            self._profile.max_artifacts,
-        )
-        evidence, artifact_read_calls = await self._read_unseen_artifacts(
-            evidence_before_lexical_read,
-            ranked_artifact_ids,
-            can_read=remaining_tool_calls > len(search_queries),
-        )
-        return {
+        search_queries: list[str]
+        if is_comparison_candidate_round:
+            assert comparison_query is not None
+            search_queries = (
+                [comparison_query] if can_add_lexical_evidence and remaining_tool_calls > 0 else []
+            )
+            search_hit_groups = await self._search_knowledge(
+                search_queries,
+                search_limit=MAX_ARTIFACT_BATCH,
+                purpose="comparison_candidates",
+            )
+            evidence = _merge_evidence(
+                evidence_before_lexical_read,
+                _comparison_candidate_excerpts(search_hit_groups),
+                max_artifacts=self._profile.max_artifacts,
+            )
+            artifact_read_calls = 0
+        else:
+            search_query_cap = (
+                self._profile.max_initial_queries
+                if state.get("retrieval_round_count", 0) == 0
+                else self._profile.max_refined_queries
+            )
+            # Reserve one tool call to read full artifacts whenever lexical search can run.
+            search_query_limit = (
+                min(search_query_cap, max(0, remaining_tool_calls - 1))
+                if can_add_lexical_evidence
+                else 0
+            )
+            search_queries = state.get("search_queries", [])[:search_query_limit]
+            search_hit_groups = await self._search_knowledge(
+                search_queries,
+                search_limit=self._profile.search_limit,
+                purpose="evidence",
+            )
+            ranked_artifact_ids = _rank_unique_artifact_ids(
+                search_hit_groups,
+                self._profile.max_artifacts,
+            )
+            evidence, artifact_read_calls = await self._read_unseen_artifacts(
+                evidence_before_lexical_read,
+                ranked_artifact_ids,
+                can_read=remaining_tool_calls > len(search_queries),
+            )
+        if account_lookup_coverage is not None:
+            account_artifact_ids = {item.artifact_id for item in account_evidence}
+            surviving_artifact_ids = {item.artifact_id for item in evidence}
+            surviving_account_count = len(account_artifact_ids & surviving_artifact_ids)
+            account_lookup_coverage = account_lookup_coverage.model_copy(
+                update={
+                    "returned_account_count": surviving_account_count,
+                    "is_truncated": (
+                        surviving_account_count < account_lookup_coverage.matched_account_count
+                    ),
+                }
+            )
+        update: AgentState = {
             "evidence": [
                 cast(dict[str, JsonValue], item.model_dump(mode="json")) for item in evidence
             ],
@@ -747,12 +1020,17 @@ class GroundedAnswerNodes:
             + artifact_read_calls
             + account_lookup_calls,
         }
+        if account_lookup_coverage is not None:
+            update["account_lookup_coverage"] = cast(
+                dict[str, JsonValue], account_lookup_coverage.model_dump(mode="json")
+            )
+        return update
 
     async def _lookup_account_evidence(
         self,
         state: AgentState,
         remaining_tool_calls: int,
-    ) -> tuple[list[EvidenceItem], int]:
+    ) -> tuple[list[EvidenceItem], int, AccountLookupCoverage | None]:
         account_lookup = state.get("account_lookup")
         lookup_allowed = (
             account_lookup is not None
@@ -760,20 +1038,35 @@ class GroundedAnswerNodes:
             and remaining_tool_calls > 0
         )
         if not lookup_allowed:
-            return [], 0
+            return [], 0, None
         request = AccountLookupInput.model_validate(account_lookup)
-        bounded_request = request.model_copy(
-            update={"limit": min(request.limit, self._profile.max_artifacts)}
+        lookup_limit = (
+            self._profile.max_artifacts
+            if request.purpose == "enumerate_cohort"
+            else min(request.limit, self._profile.max_artifacts)
         )
-        evidence = await self._tools.lookup_accounts(bounded_request)
-        return evidence, 1
+        bounded_request = request.model_copy(update={"limit": lookup_limit})
+        result = await self._tools.lookup_accounts(bounded_request)
+        coverage = AccountLookupCoverage(
+            purpose=bounded_request.purpose,
+            matched_account_count=result.matched_account_count,
+            returned_account_count=len(result.evidence),
+            is_truncated=result.is_truncated,
+        )
+        return result.evidence, 1, coverage
 
-    async def _search_knowledge(self, queries: list[str]) -> list[list[SearchHit]]:
+    async def _search_knowledge(
+        self,
+        queries: list[str],
+        *,
+        search_limit: int,
+        purpose: Literal["evidence", "comparison_candidates"],
+    ) -> list[list[SearchHit]]:
         hit_groups: list[list[SearchHit]] = []
         for query in queries:
             hit_groups.append(
                 await self._tools.search_knowledge(
-                    SearchKnowledgeInput(query=query, limit=self._profile.search_limit)
+                    SearchKnowledgeInput(query=query, limit=search_limit, purpose=purpose)
                 )
             )
         return hit_groups
@@ -786,12 +1079,25 @@ class GroundedAnswerNodes:
         can_read: bool,
     ) -> tuple[list[EvidenceItem], int]:
         evidence = list(existing_evidence)
-        existing_artifact_ids = {item.artifact_id for item in evidence}
-        unread_artifact_ids = [
-            artifact_id
-            for artifact_id in ranked_artifact_ids
-            if artifact_id not in existing_artifact_ids
-        ][: min(MAX_ARTIFACT_BATCH, max(0, self._profile.max_artifacts - len(evidence)))]
+        fully_loaded_artifact_ids = {
+            item.artifact_id for item in evidence if item.retrieval_origin != "search_excerpt"
+        }
+        excerpt_artifact_ids = {
+            item.artifact_id for item in evidence if item.retrieval_origin == "search_excerpt"
+        }
+        remaining_artifact_slots = max(0, self._profile.max_artifacts - len(evidence))
+        unread_artifact_ids: list[str] = []
+        for artifact_id in ranked_artifact_ids:
+            if artifact_id in fully_loaded_artifact_ids:
+                continue
+            is_promotion = artifact_id in excerpt_artifact_ids
+            if not is_promotion and remaining_artifact_slots == 0:
+                continue
+            unread_artifact_ids.append(artifact_id)
+            if not is_promotion:
+                remaining_artifact_slots -= 1
+            if len(unread_artifact_ids) == MAX_ARTIFACT_BATCH:
+                break
         remaining_context_chars = MAX_CONTEXT_CHARS - sum(len(item.content) for item in evidence)
         if not unread_artifact_ids or remaining_context_chars < 1_000 or not can_read:
             return evidence, 0
@@ -811,28 +1117,80 @@ class GroundedAnswerNodes:
         )
 
     async def grade_evidence(self, state: AgentState) -> AgentState:
-        model_call_count = self._next_model_call_count(state)
-        parsed, raw_response = await self._invoke_structured(
+        parsed, invocation_update = await self._invoke_structured_with_retry(
             EvidenceGrade,
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{GRADE_EVIDENCE}"),
                 HumanMessage(
-                    content=f"Question:\n{state['standalone_question']}\n\nEvidence:\n{_evidence_payload(state)}"
+                    content=(
+                        f"Question:\n{state['standalone_question']}\n\n"
+                        "PLANNED_COMPARISON_FOLLOW_UP_QUERIES "
+                        "(planner context, not evidence):\n"
+                        f"{json.dumps(state.get('search_queries', []))}\n\n"
+                        "ACCOUNT_LOOKUP_COVERAGE (trusted application metadata):\n"
+                        f"{_account_lookup_coverage_payload(state)}\n\n"
+                        f"Evidence:\n{_evidence_payload(state)}"
+                    )
                 ),
             ],
+            state=state,
+        )
+        account_lookup_coverage = state.get("account_lookup_coverage")
+        coverage = (
+            AccountLookupCoverage.model_validate(account_lookup_coverage)
+            if account_lookup_coverage is not None
+            else None
+        )
+        is_incomplete_cohort = bool(
+            coverage is not None
+            and coverage.purpose == "enumerate_cohort"
+            and coverage.is_truncated
+        )
+        has_candidate_excerpts = any(
+            EvidenceItem.model_validate(item).retrieval_origin == "search_excerpt"
+            for item in state.get("evidence", [])
+        )
+        missing_parts = list(parsed.missing_parts)
+        if is_incomplete_cohort:
+            missing_parts.append("The structured account cohort was truncated by the artifact cap.")
+        if has_candidate_excerpts:
+            missing_parts.append(
+                "Comparison candidates still require full-artifact evidence before selection."
+            )
+        refined_queries = (
+            _comparison_refinement_queries(state, parsed.refined_queries)
+            if has_candidate_excerpts
+            else parsed.refined_queries[:MAX_REFINED_QUERIES]
         )
         return {
-            "evidence_sufficient": parsed.sufficient,
-            "insufficiency_reason": parsed.reason,
-            "search_queries": parsed.refined_queries[:MAX_REFINED_QUERIES],
-            "model_call_count": model_call_count,
-            **_usage_state_update(state, raw_response),
+            "evidence_sufficient": (
+                parsed.is_sufficient and not is_incomplete_cohort and not has_candidate_excerpts
+            ),
+            "insufficiency_reason": (
+                f"{parsed.reason} The structured account cohort was truncated."
+                if is_incomplete_cohort
+                else (
+                    f"{parsed.reason} Comparison candidates require full-artifact evidence."
+                    if has_candidate_excerpts
+                    else parsed.reason
+                )
+            ),
+            "supported_question_parts": parsed.supported_parts,
+            "missing_question_parts": missing_parts,
+            "search_queries": refined_queries,
+            **invocation_update,
         }
 
     def route_after_grade(self, state: AgentState) -> str:
+        account_lookup_coverage = state.get("account_lookup_coverage")
+        if account_lookup_coverage is not None:
+            coverage = AccountLookupCoverage.model_validate(account_lookup_coverage)
+            if coverage.purpose == "enumerate_cohort" and coverage.is_truncated:
+                return "generate"
         if (
             state.get("evidence_sufficient")
             or state.get("retrieval_round_count", 0) >= self._profile.max_retrieval_rounds
+            or not state.get("search_queries")
         ):
             return "generate"
         return "refine"
@@ -848,6 +1206,7 @@ class GroundedAnswerNodes:
             return {
                 "draft_answer": INSUFFICIENT_EVIDENCE_ANSWER,
                 "final_answer": INSUFFICIENT_EVIDENCE_ANSWER,
+                "is_abstention": True,
                 "grounding_valid": True,
             }
         model_call_count = self._next_model_call_count(state)
@@ -855,11 +1214,20 @@ class GroundedAnswerNodes:
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{GENERATE_ANSWER}"),
                 HumanMessage(
-                    content=f"Question:\n{state['standalone_question']}\n\nEvidence:\n{_evidence_payload(state)}"
+                    content=(
+                        f"Question:\n{state['standalone_question']}\n\n"
+                        "Evidence coverage from the final retrieval grade:\n"
+                        f"Supported parts: {json.dumps(state.get('supported_question_parts', []))}\n"
+                        f"Missing parts: {json.dumps(state.get('missing_question_parts', []))}\n\n"
+                        "ACCOUNT_LOOKUP_COVERAGE (trusted application metadata):\n"
+                        f"{_account_lookup_coverage_payload(state)}\n\n"
+                        f"Evidence:\n{_evidence_payload(state)}"
+                    )
                 ),
             ]
         )
-        answer = str(response.content)
+        evidence = [EvidenceItem.model_validate(item) for item in state["evidence"]]
+        answer = _restore_structured_customer_names(str(response.content), evidence)
         # `final_answer` is reserved for terminal outcomes. A later repair must be able to replace
         # this draft without finalization preferring the rejected text.
         return {
@@ -876,8 +1244,7 @@ class GroundedAnswerNodes:
         if deterministic_issues:
             return {"grounding_valid": False, "grounding_issues": deterministic_issues}
 
-        model_call_count = self._next_model_call_count(state)
-        parsed, raw_response = await self._invoke_structured(
+        parsed, invocation_update = await self._invoke_structured_with_retry(
             GroundingVerdict,
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{VERIFY_GROUNDING}"),
@@ -885,15 +1252,20 @@ class GroundedAnswerNodes:
                     content=(
                         f"Question:\n{state['standalone_question']}\n\n"
                         f"Draft:\n{state['draft_answer']}\n\nEvidence:\n{_evidence_payload(state)}"
+                        "\n\nEvidence-grade coverage:\n"
+                        f"Supported parts: {json.dumps(state.get('supported_question_parts', []))}\n"
+                        f"Missing parts: {json.dumps(state.get('missing_question_parts', []))}\n"
+                        "ACCOUNT_LOOKUP_COVERAGE (trusted application metadata):\n"
+                        f"{_account_lookup_coverage_payload(state)}"
                     )
                 ),
             ],
+            state=state,
         )
         return {
             "grounding_valid": parsed.valid,
             "grounding_issues": parsed.issues,
-            "model_call_count": model_call_count,
-            **_usage_state_update(state, raw_response),
+            **invocation_update,
         }
 
     def route_after_verify(self, state: AgentState) -> str:
@@ -909,13 +1281,16 @@ class GroundedAnswerNodes:
                         f"Question:\n{state['standalone_question']}\n\n"
                         f"Draft:\n{state['draft_answer']}\n\n"
                         f"Audit issues:\n{json.dumps(state.get('grounding_issues', []))}\n\n"
+                        "ACCOUNT_LOOKUP_COVERAGE (trusted application metadata):\n"
+                        f"{_account_lookup_coverage_payload(state)}\n\n"
                         f"Evidence:\n{_evidence_payload(state)}"
                     )
                 ),
             ]
         )
+        evidence = [EvidenceItem.model_validate(item) for item in state["evidence"]]
         return {
-            "draft_answer": str(response.content),
+            "draft_answer": _restore_structured_customer_names(str(response.content), evidence),
             "model_call_count": model_call_count,
             **_usage_state_update(state, response),
         }
@@ -925,7 +1300,8 @@ class GroundedAnswerNodes:
         return {
             "final_answer": (
                 "I couldn't produce an answer that was fully supported by the knowledge base."
-            )
+            ),
+            "is_abstention": True,
         }
 
     async def finalize(self, state: AgentState) -> AgentState:

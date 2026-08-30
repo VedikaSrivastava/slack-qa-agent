@@ -15,6 +15,7 @@ from pathlib import Path
 from langgraph.checkpoint.memory import InMemorySaver
 
 from knowledge_assistant.config import AgentRuntimeSettings
+from knowledge_assistant.persistence.checkpoint_serialization import create_checkpoint_serializer
 
 # Satisfies ``DatabaseSettings`` URL validation. The offline harness always passes an
 # ``InMemorySaver`` into ``create_question_processor``, so this string is never dialed.
@@ -33,10 +34,17 @@ def load_eval_agent_settings(env_file: Path | None) -> AgentRuntimeSettings:
         raise FileNotFoundError(f"Environment file does not exist: {env_file}")
     os.environ.setdefault("DATABASE_URL", _PLACEHOLDER_DATABASE_URL)
     os.environ.setdefault("APP_ENV", "test")
-    return AgentRuntimeSettings(_env_file=env_file)
+    # Offline reports are the evaluation source of truth. Do not duplicate their questions,
+    # answers, or synthetic evidence into an optional tracing backend merely because runtime
+    # Langfuse keys are present in the same local settings file.
+    return AgentRuntimeSettings(
+        _env_file=env_file,
+        langfuse_public_key=None,
+        langfuse_secret_key=None,
+    )
 
 
 def new_eval_checkpointer() -> InMemorySaver:
     """One fresh in-process checkpointer per evaluation process."""
 
-    return InMemorySaver()
+    return InMemorySaver(serde=create_checkpoint_serializer())

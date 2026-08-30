@@ -18,16 +18,6 @@ x-app-environment: &app-environment
   INNGEST_DEV: "1"
   INNGEST_BASE_URL: http://inngest:8288
 
-x-eval-environment: &eval-environment
-  <<: *database-environment
-  APP_ENV: test
-  LOG_LEVEL: INFO
-  OPENAI_API_KEY: ${OPENAI_API_KEY}
-  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
-  LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
-  KNOWLEDGE_DB_PATH: /app/data/synthetic_startup.sqlite
-
 services:
   postgres:
     image: postgres:17-alpine
@@ -72,9 +62,6 @@ services:
         source: ./data/synthetic_startup.sqlite
         target: /app/data/synthetic_startup.sqlite
         read_only: true
-      - type: bind
-        source: ./evals/results
-        target: /app/evals/results
     depends_on:
       postgres:
         condition: service_healthy
@@ -156,7 +143,8 @@ services:
       DATABASE_URL: postgresql://langfuse:langfuse_local_dev@langfuse-postgres:5432/langfuse
       NEXTAUTH_URL: http://localhost:3000
       SALT: langfuse_local_salt
-      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
       CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
       CLICKHOUSE_URL: http://langfuse-clickhouse:8123
       CLICKHOUSE_USER: clickhouse
@@ -189,28 +177,6 @@ services:
       <<: *langfuse-environment
       NEXTAUTH_SECRET: langfuse_local_nextauth_secret
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
-
-
-  eval:
-    build:
-      context: .
-      target: runtime
-    environment: *eval-environment
-    volumes:
-      - type: bind
-        source: ./data/synthetic_startup.sqlite
-        target: /app/data/synthetic_startup.sqlite
-        read_only: true
-      - type: bind
-        source: ./evals/reports
-        target: /app/evals/reports
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: "no"
-
   slack-ingress:
     image: nginx:1.29.1-alpine
     ports:

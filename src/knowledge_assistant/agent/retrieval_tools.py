@@ -9,6 +9,7 @@ import structlog
 
 from knowledge_assistant.retrieval.models import (
     AccountLookupInput,
+    AccountLookupResult,
     EvidenceItem,
     ReadArtifactsInput,
     SearchHit,
@@ -47,13 +48,15 @@ class KnowledgeRetrievalTools:
         )
         return results
 
-    async def lookup_accounts(self, request: AccountLookupInput) -> list[EvidenceItem]:
+    async def lookup_accounts(self, request: AccountLookupInput) -> AccountLookupResult:
         started = perf_counter()
         results = await asyncio.to_thread(self._repository.lookup_accounts, request)
         logger.info(
             "account_lookup_completed",
             duration_ms=round((perf_counter() - started) * 1_000),
-            account_count=len(results),
+            returned_account_count=len(results.evidence),
+            matched_account_count=results.matched_account_count,
+            is_truncated=results.is_truncated,
             has_region_filter=request.region is not None,
             has_country_filter=request.country is not None,
             has_product_filter=request.product is not None,

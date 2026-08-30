@@ -21,7 +21,9 @@ from knowledge_assistant.agent.workflow_nodes import (
     RetrievalPlan,
     StandaloneQuestion,
     StructuredOutputValidationError,
+    _supports_comparison_shortlist,
 )
+from knowledge_assistant.retrieval.models import MAX_SEARCH_QUERY_CHARS
 
 
 def _nodes(model: object) -> GroundedAnswerNodes:
@@ -91,6 +93,155 @@ async def test_unclear_initial_question_returns_one_follow_up_without_searching(
     planner.ainvoke.assert_awaited_once()
 
 
+async def test_corpus_wide_ranking_uses_lexical_comparison_without_unbounded_account_filter() -> (
+    None
+):
+    planner = Mock()
+    planner.ainvoke = AsyncMock(
+        return_value=RetrievalPlan.model_validate(
+            {
+                "disposition": "knowledge_question",
+                "comparison_query": "supplier launch risk",
+                "queries": ["supplier milestone details", "tactical alternative"],
+                "account_lookup": {
+                    "purpose": "filter_matches",
+                    "pain_point_terms": ["launch risk"],
+                    "limit": 10,
+                },
+            }
+        )
+    )
+    model = Mock()
+    model.with_structured_output.return_value = planner
+    nodes = _nodes(model)
+    state: AgentState = {
+        "agent_run_id": "run-ranking",
+        "question": "Which supplier is most likely to miss launch?",
+        "standalone_question": "Which supplier is most likely to miss launch?",
+        "question_disposition": QuestionDisposition.KNOWLEDGE_QUESTION,
+        "history": [],
+        "model_call_count": 0,
+    }
+
+    planned = await nodes.plan_retrieval(state)
+
+    assert planned["comparison_query"] == "supplier launch risk"
+    assert planned["account_lookup"] is None
+    assert planned["search_queries"] == [
+        "supplier milestone details",
+        "tactical alternative",
+    ]
+
+
+async def test_bounded_cohort_comparison_retains_structured_account_lookup() -> None:
+    account_lookup = {
+        "purpose": "enumerate_cohort",
+        "region": "EMEA",
+        "product": "Relay",
+        "limit": 10,
+    }
+    planner = Mock()
+    planner.ainvoke = AsyncMock(
+        return_value=RetrievalPlan.model_validate(
+            {
+                "disposition": "knowledge_question",
+                "comparison_query": "EMEA Relay issue comparison",
+                "queries": ["EMEA Relay account issues"],
+                "account_lookup": account_lookup,
+            }
+        )
+    )
+    model = Mock()
+    model.with_structured_output.return_value = planner
+    nodes = _nodes(model)
+    state: AgentState = {
+        "agent_run_id": "run-cohort-comparison",
+        "question": "Compare issue types among EMEA Relay accounts.",
+        "standalone_question": "Compare issue types among EMEA Relay accounts.",
+        "question_disposition": QuestionDisposition.KNOWLEDGE_QUESTION,
+        "history": [],
+        "model_call_count": 0,
+    }
+
+    planned = await nodes.plan_retrieval(state)
+
+    assert planned["comparison_query"] is None
+    planned_lookup = planned["account_lookup"]
+    assert planned_lookup is not None
+    assert planned_lookup["purpose"] == "enumerate_cohort"
+    assert planned_lookup["region"] == "EMEA"
+    assert planned_lookup["product"] == "Relay"
+
+
+def test_source_only_plan_rejects_a_comparison_query() -> None:
+    with pytest.raises(ValidationError, match="source-only responses cannot trigger retrieval"):
+        RetrievalPlan(
+            disposition=QuestionDisposition.KNOWLEDGE_QUESTION,
+            response_mode="sources_only",
+            comparison_query="supplier launch risk",
+        )
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("Which supplier is most likely to miss launch?", True),
+        ("Who is the riskiest supplier?", True),
+        ("Which vendor is the cheapest option?", True),
+        ("What account has the largest exposure?", True),
+        ("Who is the top churn candidate?", True),
+        ("Which customer had the outage and what was the fix?", False),
+        ("What is the most recent configuration change?", False),
+        ("Is this pattern recurring across customers or a one-off?", False),
+    ],
+)
+def test_comparison_shortlist_requires_explicit_ranked_selection(
+    question: str,
+    expected: bool,
+) -> None:
+    assert _supports_comparison_shortlist(question) is expected
+
+
+async def test_recurring_pattern_lookup_keeps_structured_filter_instead_of_shortlist() -> None:
+    planner = Mock()
+    planner.ainvoke = AsyncMock(
+        return_value=RetrievalPlan.model_validate(
+            {
+                "disposition": "knowledge_question",
+                "comparison_query": "regional approval bypass pattern",
+                "queries": ["regional approval precedence migration"],
+                "account_lookup": {
+                    "purpose": "filter_matches",
+                    "country": "Exampleland",
+                    "pain_point_terms": ["approval bypass"],
+                    "limit": 10,
+                },
+            }
+        )
+    )
+    model = Mock()
+    model.with_structured_output.return_value = planner
+    nodes = _nodes(model)
+    state: AgentState = {
+        "agent_run_id": "run-recurring-pattern",
+        "question": "Is this a recurring Exampleland pattern across customers or a one-off?",
+        "standalone_question": (
+            "Is this a recurring Exampleland pattern across customers or a one-off?"
+        ),
+        "question_disposition": QuestionDisposition.KNOWLEDGE_QUESTION,
+        "history": [],
+        "model_call_count": 0,
+    }
+
+    planned = await nodes.plan_retrieval(state)
+
+    assert planned["comparison_query"] is None
+    planned_lookup = planned["account_lookup"]
+    assert planned_lookup is not None
+    assert planned_lookup["purpose"] == "filter_matches"
+    assert planned_lookup["country"] == "Exampleland"
+
+
 async def test_out_of_scope_request_gets_code_owned_scope_response() -> None:
     planner = Mock()
     planner.ainvoke = AsyncMock(
@@ -147,6 +298,25 @@ def _retrieval_plan_validation_error() -> ValidationError:
     except ValidationError as error:
         return error
     raise AssertionError("expected RetrievalPlan to reject an empty knowledge-question plan")
+
+
+def test_empty_optional_account_lookup_is_discarded_when_queries_are_valid() -> None:
+    plan = RetrievalPlan.model_validate(
+        {
+            "disposition": "knowledge_question",
+            "queries": ["conditional competitor risk"],
+            "account_lookup": {
+                "purpose": "enumerate_cohort",
+                "region": None,
+                "country": None,
+                "product": None,
+                "pain_point_terms": [],
+                "limit": 10,
+            },
+        }
+    )
+
+    assert plan.account_lookup is None
 
 
 async def test_plan_retrieval_reasks_once_when_the_first_plan_fails_schema_validation() -> None:
@@ -269,6 +439,45 @@ async def test_context_resolves_an_ambiguous_follow_up_before_intake_planning() 
     resolver_prompt = str(resolver.ainvoke.await_args.args[0][1].content)
     assert "What plan is Acme on?" in resolver_prompt
     assert "When does it renew?" in resolver_prompt
+
+
+async def test_context_resolution_reasks_once_after_schema_validation_failure() -> None:
+    with pytest.raises(ValidationError) as invalid_question:
+        StandaloneQuestion(question=" ")
+    resolver = Mock()
+    resolver.ainvoke = AsyncMock(
+        side_effect=[
+            invalid_question.value,
+            StandaloneQuestion(question="When does Acme's contract renew?"),
+        ]
+    )
+    model = Mock()
+    model.with_structured_output.return_value = resolver
+    nodes = _nodes(model)
+    state: AgentState = {
+        "agent_run_id": "run-resolution-reask",
+        "question": "When does it renew?",
+        "history": [
+            {
+                "agent_run_id": "run-earlier",
+                "question": "What plan is Acme on?",
+                "answer": "Acme is on the enterprise plan.",
+            }
+        ],
+        "model_call_count": 0,
+    }
+
+    result = await nodes.resolve_question(state)
+
+    assert resolver.ainvoke.await_count == 2
+    assert result["standalone_question"] == "When does Acme's contract renew?"
+    assert result["model_call_count"] == 2
+
+
+def test_retrieval_plan_schema_exposes_the_query_character_limit() -> None:
+    schema = RetrievalPlan.model_json_schema()
+
+    assert schema["properties"]["queries"]["items"]["maxLength"] == MAX_SEARCH_QUERY_CHARS
 
 
 async def test_source_only_follow_up_uses_selected_prior_turn_without_retrieval() -> None:

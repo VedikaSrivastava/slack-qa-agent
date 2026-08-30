@@ -6,16 +6,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import AnyHttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from knowledge_assistant.integrations.slack.routing import SlackRoutingPolicy
 
 APPLICATION_VERSION = "0.1.0"
-PROMPT_VERSION = "v3"
-# v5 makes bounded FTS diversification an evaluated profile setting and preserves prior-turn
-# provenance for deterministic evidence reuse.
-RETRIEVAL_VERSION = "v5"
+PROMPT_VERSION = "v18"
+# v11 exposes shortlist provenance to grading and forces a full-evidence comparison refinement.
+# Ordinary unknown-entity lookup and structured cohort retrieval retain their established paths.
+RETRIEVAL_VERSION = "v11"
 SETTINGS_CONFIG = SettingsConfigDict(
     env_file=".env",
     env_file_encoding="utf-8",
@@ -58,6 +58,7 @@ class AgentRuntimeSettings(DatabaseSettings):
 
     openai_api_key: SecretStr
     knowledge_db_path: Path = Path("data/synthetic_startup.sqlite")
+    langfuse_base_url: AnyHttpUrl = AnyHttpUrl("http://langfuse-web:3000")
     langfuse_public_key: SecretStr | None = None
     langfuse_secret_key: SecretStr | None = None
 
@@ -72,6 +73,24 @@ class AgentRuntimeSettings(DatabaseSettings):
         if not value.get_secret_value().strip():
             raise ValueError("OPENAI_API_KEY must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def validate_langfuse_credentials(self) -> AgentRuntimeSettings:
+        public_key = (
+            self.langfuse_public_key.get_secret_value().strip()
+            if self.langfuse_public_key is not None
+            else ""
+        )
+        secret_key = (
+            self.langfuse_secret_key.get_secret_value().strip()
+            if self.langfuse_secret_key is not None
+            else ""
+        )
+        if bool(public_key) is not bool(secret_key):
+            raise ValueError(
+                "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must be configured together"
+            )
+        return self
 
     @property
     def is_production(self) -> bool:

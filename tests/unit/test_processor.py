@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -19,6 +19,7 @@ from knowledge_assistant.agent.models import (
 from knowledge_assistant.agent.processor import (
     AgentGraph,
     LangGraphQuestionProcessor,
+    _create_langfuse_handler,
 )
 from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
@@ -83,6 +84,35 @@ def _settings() -> AgentRuntimeSettings:
     )
 
 
+@patch("knowledge_assistant.agent.processor.CallbackHandler")
+@patch("knowledge_assistant.agent.processor.Langfuse")
+def test_langfuse_handler_uses_parsed_settings(
+    langfuse_client: Mock,
+    callback_handler: Mock,
+) -> None:
+    settings = AgentRuntimeSettings(
+        _env_file=None,
+        app_env="test",
+        openai_api_key="test-key",
+        database_url="postgresql+asyncpg://user:password@postgres/test",
+        langfuse_base_url="http://langfuse.test:3000",
+        langfuse_public_key="lf_pk_test",
+        langfuse_secret_key="lf_sk_test",
+    )
+
+    handler = _create_langfuse_handler(settings)
+
+    langfuse_client.assert_called_once_with(
+        public_key="lf_pk_test",
+        secret_key="lf_sk_test",
+        base_url="http://langfuse.test:3000/",
+        environment="test",
+        release="0.1.0",
+    )
+    callback_handler.assert_called_once_with(public_key="lf_pk_test")
+    assert handler is callback_handler.return_value
+
+
 def _evidence() -> dict[str, Any]:
     return {
         "artifact_id": "art_A",
@@ -125,6 +155,7 @@ async def test_rejected_ungrounded_answer_is_reported_as_insufficient() -> None:
                     "evidence": [_evidence()],
                     "evidence_sufficient": True,
                     "grounding_valid": False,
+                    "is_abstention": True,
                     "tool_call_count": 2,
                     "model_call_count": 4,
                     "retrieval_round_count": 1,
@@ -154,6 +185,32 @@ async def test_rejected_ungrounded_answer_is_reported_as_insufficient() -> None:
     assert graph.config["configurable"] == {"thread_id": "conversation"}
     assert graph.stream_mode == "updates"
     assert graph.stream_version == "v2"
+
+
+async def test_internal_grader_uncertainty_does_not_mislabel_a_substantive_answer() -> None:
+    graph = FakeGraph(
+        updates=[
+            (
+                "finalize",
+                {
+                    "final_answer": "The supported result is 12 accounts [art_A].",
+                    "evidence": [_evidence()],
+                    "evidence_sufficient": False,
+                    "grounding_valid": False,
+                    "is_abstention": False,
+                },
+            )
+        ]
+    )
+    processor = LangGraphQuestionProcessor(graph, _settings(), PRODUCTION_PROFILE)
+
+    response = await processor.answer(
+        question="How many accounts are there?",
+        conversation_id="conversation",
+        agent_run_id="run",
+    )
+
+    assert response.insufficient_evidence is False
 
 
 async def test_completed_same_run_reconstructs_response_without_rerunning_graph() -> None:

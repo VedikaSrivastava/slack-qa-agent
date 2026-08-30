@@ -9,6 +9,7 @@ from typing import Any, Literal, Protocol, cast
 import anyio
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -40,6 +41,7 @@ from knowledge_assistant.config import (
     RETRIEVAL_VERSION,
     AgentRuntimeSettings,
 )
+from knowledge_assistant.persistence.checkpoint_serialization import create_checkpoint_serializer
 from knowledge_assistant.retrieval.models import EvidenceItem
 from knowledge_assistant.retrieval.repository import SQLiteKnowledgeRepository
 
@@ -194,8 +196,10 @@ class LangGraphQuestionProcessor:
             "conversation_id": conversation_id,
             "question_disposition": QuestionDisposition.KNOWLEDGE_QUESTION,
             "show_sources": False,
+            "comparison_query": None,
             "search_queries": [],
             "account_lookup": None,
+            "account_lookup_coverage": None,
             "evidence": [],
             "response_sources": [],
             "response_mode": "answer",
@@ -207,8 +211,11 @@ class LangGraphQuestionProcessor:
             "output_tokens": 0,
             "evidence_sufficient": False,
             "insufficiency_reason": "",
+            "supported_question_parts": [],
+            "missing_question_parts": [],
             "draft_answer": "",
             "final_answer": "",
+            "is_abstention": False,
             "grounding_valid": False,
             "grounding_issues": [],
         }
@@ -358,10 +365,8 @@ def _response_from_state(state: AgentState) -> AgentResponse:
     else:
         sources = references_for_cited_evidence(final_answer, evidence)
     disposition = QuestionDisposition(state["question_disposition"])
-    insufficient = disposition is QuestionDisposition.KNOWLEDGE_QUESTION and (
-        not bool(evidence)
-        or not state.get("evidence_sufficient", False)
-        or not state.get("grounding_valid", False)
+    insufficient = disposition is QuestionDisposition.KNOWLEDGE_QUESTION and bool(
+        state.get("is_abstention", False)
     )
     input_tokens = _nonnegative_count(state, "input_tokens")
     output_tokens = _nonnegative_count(state, "output_tokens")
@@ -444,6 +449,30 @@ def _create_answer_model(
     )
 
 
+def _create_langfuse_handler(settings: AgentRuntimeSettings) -> CallbackHandler | None:
+    """Initialize the SDK from parsed settings and return its LangChain callback."""
+
+    public_key_setting = settings.langfuse_public_key
+    secret_key_setting = settings.langfuse_secret_key
+    if public_key_setting is None or secret_key_setting is None:
+        return None
+    public_key = public_key_setting.get_secret_value().strip()
+    secret_key = secret_key_setting.get_secret_value().strip()
+    if not public_key or not secret_key:
+        return None
+
+    # Creating the client registers it under the public key. CallbackHandler then resolves that
+    # configured instance without depending on settings-file values being exported to os.environ.
+    Langfuse(
+        public_key=public_key,
+        secret_key=secret_key,
+        base_url=str(settings.langfuse_base_url),
+        environment=settings.app_env,
+        release=APPLICATION_VERSION,
+    )
+    return CallbackHandler(public_key=public_key)
+
+
 @asynccontextmanager
 async def create_question_processor(
     settings: AgentRuntimeSettings,
@@ -470,7 +499,7 @@ async def create_question_processor(
         if profile.answer_model_name is not None
         else model
     )
-    langfuse_handler = CallbackHandler() if settings.langfuse_enabled else None
+    langfuse_handler = _create_langfuse_handler(settings)
     repository = SQLiteKnowledgeRepository(
         settings.knowledge_db_path,
         fts_candidate_multiplier=profile.fts_candidate_multiplier,
@@ -485,7 +514,8 @@ async def create_question_processor(
             yield checkpointer
             return
         async with AsyncPostgresSaver.from_conn_string(
-            settings.psycopg_database_url()
+            settings.psycopg_database_url(),
+            serde=create_checkpoint_serializer(),
         ) as postgres_saver:
             yield postgres_saver
 

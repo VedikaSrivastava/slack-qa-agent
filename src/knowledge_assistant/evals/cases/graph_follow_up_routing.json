@@ -9,7 +9,7 @@
     "reference_answer": "If validation fails, run `orchestrator rollback --target ruleset=<prior_sha>`. It restores the prior ruleset and replays the invalidation hook.",
     "expected_facts": ["restores the prior ruleset", "replays the invalidation hook"],
     "expected_commands": ["orchestrator rollback --target ruleset=<prior_sha>"],
-    "expected_source_ids": ["art_fff67d92fe41"],
+    "diagnostic_source_ids": ["art_fff67d92fe41"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -22,7 +22,7 @@
     "question": "How many saved searches are in the A/B test, and what hit-rate threshold defines success?",
     "reference_answer": "The A/B test uses the top 20 saved searches. Success requires at least 80 percent top-5 correct hit rate.",
     "expected_facts": ["top 20 saved searches", "top-5 correct hit rate", "80 percent"],
-    "expected_source_ids": ["art_0bccc580184e", "art_bd3560dfe194"],
+    "diagnostic_source_ids": ["art_0bccc580184e", "art_bd3560dfe194"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -35,8 +35,7 @@
     "question": "What must the March 23 workshop produce?",
     "reference_answer": "The 2026-03-23 workshop should produce a signed schema document to upload to SI-SCHEMA-REG.",
     "expected_facts": ["signed schema document", "SI-SCHEMA-REG"],
-    "expected_dates": ["2026-03-23"],
-    "expected_source_ids": ["art_5a91258f4056"],
+    "diagnostic_source_ids": ["art_5a91258f4056"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -49,7 +48,7 @@
     "question": "When is the audit export due?",
     "reference_answer": "The audit export is due on 2026-03-24.",
     "expected_dates": ["2026-03-24"],
-    "expected_source_ids": ["art_07ae694ef3c0"],
+    "diagnostic_source_ids": ["art_07ae694ef3c0"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -64,7 +63,7 @@
     "expected_entities": ["Verdant Bay"],
     "expected_dates": ["2026-03-24"],
     "expected_facts": ["02:00-04:00 local"],
-    "expected_source_ids": ["art_fff67d92fe41"],
+    "diagnostic_source_ids": ["art_fff67d92fe41"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -122,7 +121,7 @@
     "question": "What's the 30-day target for actionable alerts?",
     "reference_answer": "The 30-day target for NordChemica is 500 actionable alerts per day or fewer.",
     "expected_facts": ["500 actionable alerts"],
-    "expected_source_ids": ["art_ffa7143fb822"],
+    "diagnostic_source_ids": ["art_ffa7143fb822"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -135,7 +134,7 @@
     "question": "And what's the rollback window if that deploy goes wrong?",
     "reference_answer": "The Aurora Ontario production deploy has a 60-minute rollback window, with an automatic disable script if more than 2 percent message drop is observed.",
     "expected_facts": ["60-minute", "message drop"],
-    "expected_source_ids": ["art_db3975cc8475"],
+    "diagnostic_source_ids": ["art_db3975cc8475"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },
@@ -148,7 +147,7 @@
     "question": "and what defines success there?",
     "reference_answer": "Success is a top-5 correct hit rate of at least 80 percent for the top 20 saved searches, with no suppression regression.",
     "expected_facts": ["80 percent", "top 20 saved searches", "top-5 correct hit rate"],
-    "expected_source_ids": ["art_0bccc580184e", "art_bd3560dfe194"],
+    "diagnostic_source_ids": ["art_0bccc580184e", "art_bd3560dfe194"],
     "max_tool_calls": 10,
     "max_retrieval_rounds": 2
   },

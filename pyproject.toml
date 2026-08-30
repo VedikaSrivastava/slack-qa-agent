@@ -40,6 +40,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/knowledge_assistant"]
+# Offline evaluation stays source-only; the production wheel contains runtime application code.
+exclude = ["src/knowledge_assistant/evals"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --strict-config"

@@ -1,0 +1,956 @@
+{
+  "status": "completed",
+  "profile": {
+    "name": "balanced-gpt-4.1-mini",
+    "model_name": "gpt-4.1-mini",
+    "temperature": 0,
+    "max_history_turns": 6,
+    "max_initial_queries": 3,
+    "max_refined_queries": 2,
+    "search_limit": 5,
+    "max_artifacts": 16,
+    "max_retrieval_rounds": 2,
+    "max_tool_calls": 8,
+    "max_model_calls": 9,
+    "fts_candidate_multiplier": 6,
+    "fts_first_pass_results_per_scenario": 2,
+    "reasoning_effort": null,
+    "answer_model_name": null,
+    "router_model_name": null
+  },
+  "suite": "multiturn",
+  "dataset_digest": "5701c14944ea693f2fb51e0e927d6db6388d30a67ffd91e4ef4bef3b65ead45d",
+  "annotation_digest": "4a46e9c0a2287671919ac987a7263cb5dc63be487e93d7271f23a061937d8b76",
+  "evaluation_protocol_version": "v13",
+  "judge_protocol_version": "v4",
+  "application_version": "0.1.0",
+  "prompt_version": "v15",
+  "retrieval_version": "v8",
+  "judge_model": "gpt-5",
+  "answer_quality_policy": {
+    "minimum_correctness": 4,
+    "minimum_completeness": 5,
+    "requires_no_material_error": true,
+    "requires_reference_consistency": true,
+    "assignment_defined": false
+  },
+  "judge_usage": {
+    "successful_case_judgements": 6,
+    "model_calls": null,
+    "tokens": null,
+    "cost_usd": null,
+    "tracking_status": "not_tracked"
+  },
+  "run_id": "5b8e074f1707",
+  "started_at": "2026-08-30T00:20:31.741940+00:00",
+  "finished_at": "2026-08-30T00:22:43.742397+00:00",
+  "elapsed_s": 132.0,
+  "aggregate": {
+    "case_count": 6,
+    "answer_quality_pass_rate": 0.5,
+    "mean_correctness": 4.166666666666667,
+    "mean_completeness": 4.166666666666667,
+    "mean_conciseness": 2.6666666666666665,
+    "material_error_cases": 1,
+    "reference_consistency_failures": 1,
+    "strict_contract_pass_rate": 0.8333333333333334,
+    "quality_pass_but_contract_fail": 0,
+    "contract_pass_but_quality_fail": 2
+  },
+  "deterministic_diagnostics": {
+    "case_count": 6,
+    "strict_contract_pass_rate": 0.8333333333333334,
+    "scope_pass_rates": {
+      "content_exact": 0.5,
+      "evidence": 0.8333333333333334,
+      "operations": 1.0,
+      "safety": 1.0
+    },
+    "scope_applicable_case_counts": {
+      "content_exact": 2,
+      "evidence": 6,
+      "operations": 6,
+      "safety": 1
+    },
+    "check_pass_rates": {
+      "answerability_behavior": 1.0,
+      "citation_integrity": 1.0,
+      "diagnostic_citation_coverage": 0.8333333333333334,
+      "diagnostic_retrieval_coverage": 0.8333333333333334,
+      "exact_commands": 1.0,
+      "exact_dates": 0.0,
+      "forbidden_phrases": 1.0,
+      "lexical_entities": 0.75,
+      "lexical_fact_anchors": 0.4,
+      "model_call_budget": 1.0,
+      "retrieval_round_budget": 1.0,
+      "source_attribution": 0.8333333333333334,
+      "source_visibility": 1.0,
+      "tool_call_budget": 1.0
+    },
+    "check_score_means": {
+      "diagnostic_citation_coverage": 0.8333333333333334,
+      "diagnostic_retrieval_coverage": 0.8333333333333334,
+      "exact_commands": 1.0,
+      "exact_dates": 0.0,
+      "lexical_entities": 0.75,
+      "lexical_fact_anchors": 0.5
+    },
+    "lexical_content_coverage": {
+      "macro_per_case": 0.5966666666666667,
+      "micro": 0.6521739130434783,
+      "by_group_micro": {
+        "commands": 1.0,
+        "dates": 0.0,
+        "entities": 0.75,
+        "facts": 0.6470588235294118
+      },
+      "per_case": {
+        "multiturn-verdant-window-then-rollback": 0.3333333333333333,
+        "multiturn-nordchemica-target-then-credit": 1.0,
+        "multiturn-aureum-fields-then-fix": 0.4,
+        "multiturn-topic-switch-does-not-carry-context": 1.0,
+        "multiturn-clarification-then-one-word-answer": 0.25
+      }
+    },
+    "diagnostic_source_coverage": {
+      "citation_mean": 0.8333333333333334,
+      "retrieval_mean": 0.8333333333333334
+    },
+    "per_case_contract": {
+      "multiturn-verdant-window-then-rollback": true,
+      "multiturn-nordchemica-target-then-credit": true,
+      "multiturn-aureum-fields-then-fix": true,
+      "multiturn-topic-switch-does-not-carry-context": true,
+      "multiturn-clarification-then-one-word-answer": false,
+      "multiturn-source-request-reuses-prior-answer": true
+    },
+    "latency_ms": {
+      "p50": 7609.0,
+      "p95": 9865.0,
+      "p99": 9865.0,
+      "mean": 6242.5,
+      "max": 9865.0
+    },
+    "tool_calls": {
+      "total": 12,
+      "mean_per_case": 2.0,
+      "max": 5
+    },
+    "model_calls": {
+      "total": 24,
+      "mean_per_case": 4.0,
+      "max": 5
+    },
+    "retrieval_rounds": {
+      "mean_per_case": 0.6666666666666666,
+      "max": 1
+    },
+    "tokens": {
+      "input_total": 89475,
+      "output_total": 2518,
+      "total": 91993,
+      "mean_total_per_case": 15332.166666666666
+    },
+    "cost_usd": {
+      "total": 0.0398188,
+      "per_case": 0.006636466666666667,
+      "per_1k_cases": 6.636466666666667,
+      "method": "single-model",
+      "answer_model": "gpt-4.1-mini",
+      "prices_captured_at": "2026-08-29"
+    },
+    "answer_length": {
+      "chars_p50": 757.0,
+      "chars_mean": 683.3333333333334,
+      "chars_max": 1563.0,
+      "words_p50": 113.0,
+      "words_mean": 100.16666666666667,
+      "words_max": 223.0
+    },
+    "reliability": {
+      "strict_contract_passed_cases": 5,
+      "budget_exceeded_cases": 0,
+      "answerability_behavior_failed_cases": 0
+    }
+  },
+  "judgements": [
+    {
+      "case_id": "multiturn-verdant-window-then-rollback",
+      "answer_quality_passed": false,
+      "strict_contract_passed": true,
+      "judgement": {
+        "correctness": 4,
+        "completeness": 5,
+        "conciseness": 1,
+        "has_material_error": true,
+        "reference_consistent": false,
+        "missing_or_incorrect_claims": [
+          "States rollback is automatic upon validation failure; reference specifies running a CLI command to perform rollback."
+        ]
+      },
+      "answer_words": 223
+    },
+    {
+      "case_id": "multiturn-nordchemica-target-then-credit",
+      "answer_quality_passed": true,
+      "strict_contract_passed": true,
+      "judgement": {
+        "correctness": 5,
+        "completeness": 5,
+        "conciseness": 1,
+        "has_material_error": false,
+        "reference_consistent": true,
+        "missing_or_incorrect_claims": []
+      },
+      "answer_words": 131
+    },
+    {
+      "case_id": "multiturn-aureum-fields-then-fix",
+      "answer_quality_passed": false,
+      "strict_contract_passed": true,
+      "judgement": {
+        "correctness": 5,
+        "completeness": 4,
+        "conciseness": 2,
+        "has_material_error": false,
+        "reference_consistent": true,
+        "missing_or_incorrect_claims": [
+          "Omitted the SCIM tracing to see where approval latency is happening."
+        ]
+      },
+      "answer_words": 115
+    },
+    {
+      "case_id": "multiturn-topic-switch-does-not-carry-context",
+      "answer_quality_passed": true,
+      "strict_contract_passed": true,
+      "judgement": {
+        "correctness": 5,
+        "completeness": 5,
+        "conciseness": 2,
+        "has_material_error": false,
+        "reference_consistent": true,
+        "missing_or_incorrect_claims": []
+      },
+      "answer_words": 113
+    },
+    {
+      "case_id": "multiturn-clarification-then-one-word-answer",
+      "answer_quality_passed": false,
+      "strict_contract_passed": false,
+      "judgement": {
+        "correctness": 1,
+        "completeness": 1,
+        "conciseness": 5,
+        "has_material_error": false,
+        "reference_consistent": true,
+        "missing_or_incorrect_claims": [
+          "Did not provide the approved live patch window for Verdant Bay: 2026-03-24, 02:00\u201304:00 local time."
+        ]
+      },
+      "answer_words": 10
+    },
+    {
+      "case_id": "multiturn-source-request-reuses-prior-answer",
+      "answer_quality_passed": true,
+      "strict_contract_passed": true,
+      "judgement": {
+        "correctness": 5,
+        "completeness": 5,
+        "conciseness": 5,
+        "has_material_error": false,
+        "reference_consistent": true,
+        "missing_or_incorrect_claims": []
+      },
+      "answer_words": 9
+    }
+  ],
+  "results": [
+    {
+      "case_id": "multiturn-verdant-window-then-rollback",
+      "strict_contract_passed": true,
+      "content_exact_passed": true,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing: ['restores the prior ruleset', 'replays the invalidation hook']"
+        },
+        {
+          "name": "exact_commands",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "If validation checks fail during the live patch window for Verdant Bay (scheduled 2026-03-24 02:00-04:00 local time), the system will automatically roll back to the pre-patch ruleset. The rollback procedure involves running the command `orchestrator rollback --target ruleset=<prior_sha>`, which rehydrates the prior rules and replays the cache invalidation hook to restore the previous state. This rollback is part of an atomic deployment process that includes pre-checks and automatic rollback on validation failure.\n\nThe validation checks include running 50 synthetic approval flows and sampling 50 in-flight approvals marked by the customer. Before patching, a snapshot of audit logs (OR-AUDIT-LOGS) is taken for evidence.\n\nAfter rollback execution, the post-rollback steps are to notify Verdant Bay, open an incident for manual remediation, and revert any partial replays that may have occurred.\n\nEscalation contacts during the patch include SE on-call Jin Park and Support lead Olivia Grant.\n\nDetailed step-by-step commands beyond the single CLI command are not provided, nor is specific timing or duration for rollback execution beyond the command and replay of the invalidation hook. There is also no explicit mention of rollback verification steps beyond notification and incident opening.\n\nThis rollback plan ensures that if any validation fails during the live patch window, the system can safely revert to the prior stable ruleset with minimal disruption and documented evidence for compliance and troubleshooting [art_fff67d92fe41, art_f893faeda15a].",
+      "source_ids": [
+        "art_fff67d92fe41",
+        "art_f893faeda15a"
+      ],
+      "retrieved_artifact_ids": [
+        "art_fff67d92fe41",
+        "art_f893faeda15a",
+        "art_1a35433cad7c",
+        "art_6b7a18706e8e",
+        "art_3162bf3bba31",
+        "art_e8b3e74e23b8",
+        "art_360fbceaca6a",
+        "art_d57377f0810c",
+        "art_c6d03ea392b2",
+        "art_8ca0b36476f9"
+      ],
+      "show_sources": false,
+      "tool_call_count": 5,
+      "retrieval_round_count": 1,
+      "model_call_count": 5,
+      "input_tokens": 24318,
+      "output_tokens": 783,
+      "duration_ms": 9865,
+      "answer_chars": 1563,
+      "answer_words": 223,
+      "lexical_hits": {
+        "facts": {
+          "matched": 0,
+          "total": 2
+        },
+        "commands": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "multiturn-nordchemica-target-then-credit",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "The financial remedy offered to NordChemica if the 30-day target for actionable alerts per day is not met is a conditional 6% contract credit for the next year. This credit is tied to the success metrics of reducing actionable alerts by 70% within 30 days post-deployment of the tuning bundle and an agreed analytics baseline. The 6% credit is contingent on failing to meet the agreed reduction target and requires a clear baseline measurement before changes are applied. The credit language is to be provided in writing and approved by legal as part of the commercial concession to procurement. This remedy is part of a risk-sharing approach to avoid consolidation to a competitor and is documented in the executive escalation call and the service review plan with NordChemica [art_0a135c689c08, art_ffa7143fb822, art_25fac9f564e7].",
+      "source_ids": [
+        "art_0a135c689c08",
+        "art_ffa7143fb822",
+        "art_25fac9f564e7"
+      ],
+      "retrieved_artifact_ids": [
+        "art_0a135c689c08",
+        "art_ffa7143fb822",
+        "art_ac0f6823bd92",
+        "art_25fac9f564e7",
+        "art_49f5fae5a1cf",
+        "art_e20b32ed9bb7",
+        "art_8254b9cf5801"
+      ],
+      "show_sources": true,
+      "tool_call_count": 1,
+      "retrieval_round_count": 1,
+      "model_call_count": 5,
+      "input_tokens": 22765,
+      "output_tokens": 513,
+      "duration_ms": 8502,
+      "answer_chars": 833,
+      "answer_words": 131,
+      "lexical_hits": {
+        "facts": {
+          "matched": 3,
+          "total": 3
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "multiturn-aureum-fields-then-fix",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.5,
+          "is_gate": false,
+          "details": "missing: ['canonical', 'SCIM tracing']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing: ['Aureum']"
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "Jin proposed a fast fix to avoid waiting on Okta change control by adding a preprocessing rule in Signal Ingest that maps the SCIM attribute \"businessUnit\" to \"department\" (or vice versa) and publishes a normalized field for the correlator. This is a configuration-only change that can be hot-reloaded, is low risk, and allows immediate normalization without modifying Okta flows. This hot-reloadable config change does not require appliance restarts and can be deployed quickly, avoiding the 2\u20134 week delay associated with standardizing at the identity source (Okta) [art_79f625aafa16]. \n\nThe exact date when Jin proposed this fast fix is not explicitly stated, but the call discussing it was after March 2nd and before March 20th, 2026 [art_79f625aafa16].",
+      "source_ids": [
+        "art_79f625aafa16"
+      ],
+      "retrieved_artifact_ids": [
+        "art_79f625aafa16",
+        "art_ba141dc7febd",
+        "art_e408968fe032",
+        "art_5ccab0fec154",
+        "art_330bb489aad0"
+      ],
+      "show_sources": false,
+      "tool_call_count": 2,
+      "retrieval_round_count": 1,
+      "model_call_count": 5,
+      "input_tokens": 16775,
+      "output_tokens": 511,
+      "duration_ms": 7609,
+      "answer_chars": 757,
+      "answer_words": 115,
+      "lexical_hits": {
+        "facts": {
+          "matched": 2,
+          "total": 4
+        },
+        "entities": {
+          "matched": 0,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "multiturn-topic-switch-does-not-carry-context",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": true,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "forbidden_phrases",
+          "scope": "safety",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "The temporary field mappings planned in the MapleHarvest Quebec pilot router transform include mapping the field \"txn_id\" to \"transaction_id\" and \"total_amount\" to \"amount_cents\". Additionally, there is type coercion from string to int for these fields. Key fields such as \"store_id\" and \"register_id\" are preserved. The transform also adds a flag field \"_ns_transform=true\" and enables OR-AUDIT-LOGS for each transformed event to ensure safety and auditability. This temporary transform is implemented in the SI-CLOUD-ROUTER component and outputs to a canonical topic. The planned deployment date for this transform is 2026-03-21, with Jin Park as the owner responsible for implementation. No other temporary field mappings beyond these are documented in the evidence provided [art_5a91258f4056, art_6c5bb3a4b89f, art_6c5bb3a4b89f].",
+      "source_ids": [
+        "art_5a91258f4056",
+        "art_6c5bb3a4b89f"
+      ],
+      "retrieved_artifact_ids": [
+        "art_5a91258f4056",
+        "art_d907a0a1032a",
+        "art_6c5bb3a4b89f",
+        "art_6be1b68b59cb",
+        "art_6c9446a04e8d",
+        "art_bb1a48244f1b",
+        "art_e20b32ed9bb7",
+        "art_5950781251ef"
+      ],
+      "show_sources": false,
+      "tool_call_count": 4,
+      "retrieval_round_count": 1,
+      "model_call_count": 5,
+      "input_tokens": 21741,
+      "output_tokens": 553,
+      "duration_ms": 7911,
+      "answer_chars": 833,
+      "answer_words": 113,
+      "lexical_hits": {
+        "facts": {
+          "matched": 6,
+          "total": 6
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "multiturn-clarification-then-one-word-answer",
+      "strict_contract_passed": false,
+      "content_exact_passed": false,
+      "evidence_passed": false,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing: ['02:00', '04:00']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "exact_dates",
+          "scope": "content",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": true,
+          "details": "missing: ['2026-03-24']"
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": false,
+          "score": null,
+          "is_gate": true,
+          "details": "no sources returned"
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing candidate-curated IDs: ['art_fff67d92fe41']"
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing candidate-curated IDs: ['art_fff67d92fe41']"
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "What specific information about Verdant Bay are you looking for?",
+      "source_ids": [],
+      "retrieved_artifact_ids": [],
+      "show_sources": false,
+      "tool_call_count": 0,
+      "retrieval_round_count": 0,
+      "model_call_count": 2,
+      "input_tokens": 1940,
+      "output_tokens": 72,
+      "duration_ms": 1658,
+      "answer_chars": 64,
+      "answer_words": 10,
+      "lexical_hits": {
+        "facts": {
+          "matched": 0,
+          "total": 2
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        },
+        "dates": {
+          "matched": 0,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "multiturn-source-request-reuses-prior-answer",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "source_visibility",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "model_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "Here are the sources used for that earlier answer.",
+      "source_ids": [
+        "art_fff67d92fe41"
+      ],
+      "retrieved_artifact_ids": [
+        "art_fff67d92fe41"
+      ],
+      "show_sources": true,
+      "tool_call_count": 0,
+      "retrieval_round_count": 0,
+      "model_call_count": 2,
+      "input_tokens": 1936,
+      "output_tokens": 86,
+      "duration_ms": 1910,
+      "answer_chars": 50,
+      "answer_words": 9,
+      "lexical_hits": {}
+    }
+  ]
+}

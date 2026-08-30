@@ -25,7 +25,11 @@ from knowledge_assistant.config import (
 )
 from knowledge_assistant.evals._stats import percentile as _percentile
 from knowledge_assistant.evals._stats import sum_optional as _sum_optional
-from knowledge_assistant.evals.datasets import dataset_digest
+from knowledge_assistant.evals.datasets import (
+    EVALUATION_PROTOCOL_VERSION,
+    annotation_digest,
+    dataset_digest,
+)
 from knowledge_assistant.evals.evaluators import evaluate_response
 from knowledge_assistant.evals.models import CheckResult, EvalCase
 from knowledge_assistant.integrations.slack.routing import (
@@ -53,9 +57,9 @@ class GraphFollowUpRoutingEvalCase(EvalCase):
 
 
 class FollowUpAnswerEvaluation(BaseModel):
-    """Safe answer-quality summary; never persist the raw generated answer."""
+    """Safe deterministic-contract summary; never persist the raw generated answer."""
 
-    passed: bool
+    strict_contract_passed: bool
     checks: list[CheckResult]
     source_ids: list[str]
     retrieved_artifact_ids: list[str]
@@ -90,6 +94,9 @@ class GraphFollowUpRoutingEvalResult(BaseModel):
     routing_duration_ms: int = Field(ge=0)
     follow_up_answer_duration_ms: int | None = Field(default=None, ge=0)
     graph_invoked_for_follow_up: bool
+    # Preserve action cost for every graph invocation, including unwanted responses to cases
+    # that should have stayed silent. Answer evaluation remains limited to expected responses.
+    follow_up_invocation: GraphActionMetrics | None = None
     follow_up_answer: FollowUpAnswerEvaluation | None = None
 
 
@@ -119,18 +126,19 @@ def _answer_evaluation(
             expected_dates=case.expected_dates,
             expected_commands=case.expected_commands,
             expected_customers=case.expected_customers,
-            expected_source_ids=case.expected_source_ids,
+            diagnostic_source_ids=case.diagnostic_source_ids,
             expected_show_sources=case.expected_show_sources,
             forbidden_phrases=case.forbidden_phrases,
             max_tool_calls=case.max_tool_calls,
             max_model_calls=case.max_model_calls,
             max_retrieval_rounds=case.max_retrieval_rounds,
             insufficient_evidence_acceptable=case.insufficient_evidence_acceptable,
+            expected_insufficient_evidence=case.expected_insufficient_evidence,
         ),
         response,
     )
     return FollowUpAnswerEvaluation(
-        passed=evaluated.passed,
+        strict_contract_passed=evaluated.strict_contract_passed,
         checks=evaluated.checks,
         source_ids=evaluated.source_ids,
         retrieved_artifact_ids=evaluated.retrieved_artifact_ids,
@@ -197,6 +205,7 @@ async def run_graph_follow_up_routing_cases(
         classification = await classifier.classify(classification_request)
         routing_duration_ms = max(0, int((time.perf_counter() - started_at) * 1_000))
         action = decide_responder_classification(classification).action
+        follow_up_invocation: GraphActionMetrics | None = None
         follow_up_answer: FollowUpAnswerEvaluation | None = None
         follow_up_answer_duration_ms: int | None = None
         if action is RoutingAction.RESPOND:
@@ -207,6 +216,7 @@ async def run_graph_follow_up_routing_cases(
                 agent_run_id=str(uuid.uuid4()),
             )
             follow_up_answer_duration_ms = max(0, int((time.perf_counter() - started_at) * 1_000))
+            follow_up_invocation = _action_metrics(follow_up_response)
             if case.expected_action is RoutingAction.RESPOND:
                 follow_up_answer = _answer_evaluation(case, follow_up_response)
         results.append(
@@ -222,6 +232,7 @@ async def run_graph_follow_up_routing_cases(
                 routing_duration_ms=routing_duration_ms,
                 follow_up_answer_duration_ms=follow_up_answer_duration_ms,
                 graph_invoked_for_follow_up=action is RoutingAction.RESPOND,
+                follow_up_invocation=follow_up_invocation,
                 follow_up_answer=follow_up_answer,
             )
         )
@@ -259,7 +270,7 @@ async def run_graph_follow_up_routing_suite(
 def graph_follow_up_routing_metrics(
     results: list[GraphFollowUpRoutingEvalResult],
 ) -> dict[str, object]:
-    """Measure safe routing plus quality, latency, and action cost of accepted follow-ups."""
+    """Measure safe routing plus contract, latency, and every follow-up graph action."""
 
     total = len(results)
     expected_respond = [
@@ -292,6 +303,18 @@ def graph_follow_up_routing_metrics(
     category_passes = Counter(result.category for result in results if result.routing_passed)
     accepted_answers = [
         result.follow_up_answer for result in results if result.follow_up_answer is not None
+    ]
+    invoked_follow_ups = [result for result in results if result.graph_invoked_for_follow_up]
+    follow_up_action_metrics = [
+        metrics
+        for result in invoked_follow_ups
+        if (metrics := _follow_up_action_metrics(result)) is not None
+    ]
+    unexpected_follow_up_action_metrics = [
+        metrics
+        for result in invoked_follow_ups
+        if result.expected_action is RoutingAction.STAY_SILENT
+        and (metrics := _follow_up_action_metrics(result)) is not None
     ]
     initial_answers = [result.initial_answer for result in results]
     setup_durations = [result.initial_answer_duration_ms for result in results]
@@ -327,28 +350,46 @@ def graph_follow_up_routing_metrics(
             },
         },
         "graph": {
-            "follow_up_invocations": len(actual_respond),
-            "unexpected_follow_up_invocations": false_positives,
-            "accepted_follow_up_answer_pass_rate": _ratio(
-                sum(answer.passed for answer in accepted_answers),
+            "follow_up_invocations": len(invoked_follow_ups),
+            "unexpected_follow_up_invocations": sum(
+                result.expected_action is RoutingAction.STAY_SILENT for result in invoked_follow_ups
+            ),
+            "accepted_follow_up_strict_contract_rate": _ratio(
+                sum(answer.strict_contract_passed for answer in accepted_answers),
                 len(accepted_answers),
             ),
-            "end_to_end_positive_pass_rate": _ratio(
+            "end_to_end_positive_contract_rate": _ratio(
                 sum(
                     result.routing_passed
                     and result.follow_up_answer is not None
-                    and result.follow_up_answer.passed
+                    and result.follow_up_answer.strict_contract_passed
                     for result in expected_respond
                 ),
                 len(expected_respond),
             ),
-            "follow_up_tool_calls": sum(answer.tool_call_count for answer in accepted_answers),
-            "follow_up_model_calls": sum(answer.model_call_count for answer in accepted_answers),
+            "follow_up_tool_calls": sum(
+                metrics.tool_call_count for metrics in follow_up_action_metrics
+            ),
+            "follow_up_model_calls": sum(
+                metrics.model_call_count for metrics in follow_up_action_metrics
+            ),
             "follow_up_input_tokens": _sum_optional(
-                [answer.input_tokens for answer in accepted_answers]
+                [metrics.input_tokens for metrics in follow_up_action_metrics]
             ),
             "follow_up_output_tokens": _sum_optional(
-                [answer.output_tokens for answer in accepted_answers]
+                [metrics.output_tokens for metrics in follow_up_action_metrics]
+            ),
+            "unexpected_follow_up_tool_calls": sum(
+                metrics.tool_call_count for metrics in unexpected_follow_up_action_metrics
+            ),
+            "unexpected_follow_up_model_calls": sum(
+                metrics.model_call_count for metrics in unexpected_follow_up_action_metrics
+            ),
+            "unexpected_follow_up_input_tokens": _sum_optional(
+                [metrics.input_tokens for metrics in unexpected_follow_up_action_metrics]
+            ),
+            "unexpected_follow_up_output_tokens": _sum_optional(
+                [metrics.output_tokens for metrics in unexpected_follow_up_action_metrics]
             ),
             "initial_tool_calls": sum(answer.tool_call_count for answer in initial_answers),
             "initial_model_calls": sum(answer.model_call_count for answer in initial_answers),
@@ -361,10 +402,10 @@ def graph_follow_up_routing_metrics(
             "routing_classifier_model_calls": total,
             "routing_classifier_tokens": "not exposed by the production structured classifier",
             "thread_total_tool_calls": sum(answer.tool_call_count for answer in initial_answers)
-            + sum(answer.tool_call_count for answer in accepted_answers),
+            + sum(metrics.tool_call_count for metrics in follow_up_action_metrics),
             "thread_total_model_calls": total
             + sum(answer.model_call_count for answer in initial_answers)
-            + sum(answer.model_call_count for answer in accepted_answers),
+            + sum(metrics.model_call_count for metrics in follow_up_action_metrics),
         },
         "latency_ms": {
             "initial_answer_p50": _percentile(setup_durations, 0.50),
@@ -392,6 +433,8 @@ async def write_graph_follow_up_routing_results(
     payload = {
         "suite": GRAPH_FOLLOW_UP_ROUTING_SUITE,
         "dataset_digest": dataset_digest(cases),
+        "annotation_digest": annotation_digest(cases),
+        "evaluation_protocol_version": EVALUATION_PROTOCOL_VERSION,
         "application_version": APPLICATION_VERSION,
         "prompt_version": PROMPT_VERSION,
         "retrieval_version": RETRIEVAL_VERSION,
@@ -404,14 +447,8 @@ async def write_graph_follow_up_routing_results(
         },
         "saved_at": datetime.now(UTC).isoformat(),
         "routing_passed": all(result.routing_passed for result in results),
-        "end_to_end_passed": all(
-            result.expected_action is RoutingAction.STAY_SILENT
-            or (
-                result.routing_passed
-                and result.follow_up_answer is not None
-                and result.follow_up_answer.passed
-            )
-            for result in results
+        "end_to_end_contract_passed": all(
+            _case_end_to_end_contract_passed(result) for result in results
         ),
         "case_count": len(results),
         "metrics": graph_follow_up_routing_metrics(results),
@@ -420,3 +457,42 @@ async def write_graph_follow_up_routing_results(
     async_output_path = anyio.Path(output_path)
     await async_output_path.parent.mkdir(parents=True, exist_ok=True)
     await async_output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _case_end_to_end_contract_passed(result: GraphFollowUpRoutingEvalResult) -> bool:
+    """Require correct routing before applying the expected action's graph contract."""
+
+    if not result.routing_passed:
+        return False
+    if result.expected_action is RoutingAction.STAY_SILENT:
+        return (
+            result.actual_action is RoutingAction.STAY_SILENT
+            and not result.graph_invoked_for_follow_up
+            and result.follow_up_invocation is None
+            and result.follow_up_answer is None
+        )
+    return (
+        result.actual_action is RoutingAction.RESPOND
+        and result.graph_invoked_for_follow_up
+        and result.follow_up_invocation is not None
+        and result.follow_up_answer is not None
+        and result.follow_up_answer.strict_contract_passed
+    )
+
+
+def _follow_up_action_metrics(
+    result: GraphFollowUpRoutingEvalResult,
+) -> GraphActionMetrics | None:
+    """Read invocation metrics, with a fallback for reports produced before protocol v4."""
+
+    if result.follow_up_invocation is not None:
+        return result.follow_up_invocation
+    if result.follow_up_answer is None:
+        return None
+    return GraphActionMetrics(
+        tool_call_count=result.follow_up_answer.tool_call_count,
+        model_call_count=result.follow_up_answer.model_call_count,
+        retrieval_round_count=result.follow_up_answer.retrieval_round_count,
+        input_tokens=result.follow_up_answer.input_tokens,
+        output_tokens=result.follow_up_answer.output_tokens,
+    )
