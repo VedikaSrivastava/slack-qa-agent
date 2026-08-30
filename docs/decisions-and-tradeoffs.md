@@ -85,6 +85,21 @@ an event with no matched run, and cleanup that observes an already-succeeded run
 untouched. Successful finalization owns the outcome-specific status, including `suspended` for a
 clarification, so delayed cleanup cannot overwrite it.
 
+## Native Stop chrome stays Slack-owned
+
+**Decision:** keep `agents.sessions.setStatus` `processing` so Slack can show its native Stop
+control. Do not invert the hover, hide the session loader while work is in flight, or add a second
+Stop button.
+
+**Why:** the processing row is drawn by Slack. The default text is `{bot display name} is working…`;
+Stop appears on hover. The current sessions API does not accept a custom loading message or a
+Stop-first display. Leaving `processing` removes native Stop. A custom Block Kit button would be a
+second control, would require Interactivity, and may not be clickable on a live stream.
+
+**Tradeoff:** testers and users must hover the session working line to find Stop. That is Slack
+client behavior, not a missing event subscription. The investigation and rejected alternatives are
+in the [implementation journal](implementation-journal.md#native-stop-hover-is-slack-client-chrome).
+
 ## Conservative unmentioned follow-ups
 
 **Decision:** an explicit mention establishes an agent-owned thread. Ordinary human replies in that
@@ -451,7 +466,10 @@ Keep runtime tracing optional and local evaluation independent of the tracing ba
 Traces are useful evidence, but the application must not depend on them to answer Slack questions.
 
 **Tradeoff:** changing a model or prompt requires code review and deployment. Local JSON reports are
-portable, while optional Langfuse traces remain in the developer's configured environment.
+portable, while optional Langfuse traces remain in the developer's configured environment. The
+self-hosted stack also depends on MinIO creating bucket `langfuse` before OTEL ingestion can
+succeed; the compose service does that on startup so a missing bucket does not look like a
+disconnected app.
 
 ## No answer cache without evidence that it helps
 

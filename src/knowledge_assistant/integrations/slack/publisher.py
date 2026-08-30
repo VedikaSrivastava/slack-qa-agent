@@ -42,6 +42,10 @@ MESSAGE_RECONCILE_POLL_SECONDS = 0.25
 _SOURCES_HEADER = "\n\n**Sources**\n\n"
 _CONTINUATION_HEADER = "**Continued**\n\n"
 _INITIAL_TASK_KEY = "understanding"
+_INITIAL_TASK_TITLE = "Understanding the request"
+_ANSWER_READY_TASK_KEY = "answer-ready"
+_ANSWER_READY_TITLE = "Answer ready"
+_TERMINAL_TASK_KEY = "terminal"
 _DELIVERY_METADATA_EVENT_TYPE = "grounded_qa_delivery"
 _SAFE_ERROR_TEXT = "I couldn't complete that request right now. Please try again shortly."
 _CANCELLED_TEXT = "Stopped at your request."
@@ -290,6 +294,15 @@ def _progress_title_for_sequence(sequence: int) -> str:
     return _PROGRESS_TITLES_BY_SEQUENCE.get(sequence, "Completed step")
 
 
+def _title_for_task_key(task_key: str) -> str:
+    if task_key == _INITIAL_TASK_KEY:
+        return _INITIAL_TASK_TITLE
+    for sequence in _PROGRESS_TITLES_BY_SEQUENCE:
+        if task_key == _progress_task_key(sequence):
+            return _progress_title_for_sequence(sequence)
+    return "Completed step"
+
+
 def _task_update(
     run_id: uuid.UUID,
     *,
@@ -320,6 +333,34 @@ def _completion_plan_title(stream_ts: str | None) -> str:
         return f"Answered in {elapsed_seconds}s"
     minutes, seconds = divmod(elapsed_seconds, 60)
     return f"Answered in {minutes}m {seconds}s"
+
+
+def _answer_completion_chunks(
+    run_id: uuid.UUID,
+    *,
+    text: str,
+    completion_title: str,
+    completion_task_key: str,
+) -> list[dict[str, object]]:
+    # Slack still draws a plan row when hide_title is true, so a hidden "Answer ready"
+    # task appears as a blank bullet. Complete the last real stage in place, then add a
+    # visible terminal step instead of replacing or hiding that label.
+    return [
+        _task_update(
+            run_id,
+            title=_title_for_task_key(completion_task_key),
+            status="complete",
+            task_key=completion_task_key,
+        ),
+        _task_update(
+            run_id,
+            title=_ANSWER_READY_TITLE,
+            status="complete",
+            task_key=_ANSWER_READY_TASK_KEY,
+        ),
+        {"type": "plan_update", "title": completion_title},
+        {"type": "markdown_text", "text": text},
+    ]
 
 
 def _manifest_part(manifest: DeliveryManifest, part_number: int) -> tuple[str, str | None]:
@@ -444,10 +485,10 @@ class SlackPublisher:
                 recipient_user_id=delivery.user_id,
                 task_display_mode="plan",
                 chunks=[
-                    {"type": "plan_update", "title": "Working on your request"},
+                    {"type": "plan_update", "title": _INITIAL_TASK_TITLE},
                     _task_update(
                         run_id,
-                        title="Understanding the request",
+                        title=_INITIAL_TASK_TITLE,
                         status="in_progress",
                         task_key=_INITIAL_TASK_KEY,
                     ),
@@ -535,7 +576,7 @@ class SlackPublisher:
             chunks.append(
                 _task_update(
                     run_id,
-                    title="Understanding the request",
+                    title=_INITIAL_TASK_TITLE,
                     status="complete",
                     task_key=_INITIAL_TASK_KEY,
                 )
@@ -557,6 +598,7 @@ class SlackPublisher:
                 task_key=current_task_key,
             )
         )
+        chunks.append({"type": "plan_update", "title": title})
         try:
             if delivery.stream_ts is None:
                 raise RunTransitionError(f"Open Slack stream has no timestamp: {run_id}")
@@ -565,7 +607,8 @@ class SlackPublisher:
                 ts=delivery.stream_ts,
                 # Slack shows the active plan task before completed tasks. Each stage gets a
                 # stable ID, so the UI retains a readable history while the newest work stays
-                # at the top.
+                # at the top. The plan title tracks the current stage so it does not duplicate
+                # Slack's session-level "is working" loader, which also owns the Stop control.
                 chunks=chunks,
             )
         except Exception as exc:
@@ -885,20 +928,12 @@ class SlackPublisher:
                 await self._client.chat_stopStream(
                     channel=delivery.channel_id,
                     ts=delivery.stream_ts,
-                    chunks=[
-                        _task_update(
-                            run_id,
-                            title="Answer ready",
-                            status="complete",
-                            task_key=completion_task_key,
-                            hide_title=True,
-                        ),
-                        {
-                            "type": "plan_update",
-                            "title": completion_title,
-                        },
-                        {"type": "markdown_text", "text": text},
-                    ],
+                    chunks=_answer_completion_chunks(
+                        run_id,
+                        text=text,
+                        completion_title=completion_title,
+                        completion_task_key=completion_task_key,
+                    ),
                     metadata=metadata,
                     session_status=session_status,
                 )
@@ -988,17 +1023,12 @@ class SlackPublisher:
             await self._client.chat_stopStream(
                 channel=delivery.channel_id,
                 ts=delivery.stream_ts,
-                chunks=[
-                    _task_update(
-                        run_id,
-                        title="Answer ready",
-                        status="complete",
-                        task_key=completion_task_key,
-                        hide_title=True,
-                    ),
-                    {"type": "plan_update", "title": completion_title},
-                    {"type": "markdown_text", "text": text},
-                ],
+                chunks=_answer_completion_chunks(
+                    run_id,
+                    text=text,
+                    completion_title=completion_title,
+                    completion_task_key=completion_task_key,
+                ),
                 metadata=metadata,
                 session_status=session_status,
             )
@@ -1143,8 +1173,7 @@ class SlackPublisher:
                 run_id,
                 title="Work stopped" if is_error else "Work complete",
                 status="error" if is_error else "complete",
-                task_key="terminal",
-                hide_title=True,
+                task_key=_TERMINAL_TASK_KEY,
             ),
             {"type": "markdown_text", "text": text},
         ]

@@ -508,14 +508,15 @@ async def test_native_stream_shows_sanitized_progress_then_verified_answer() -> 
     assert client.starts[0]["recipient_team_id"] == "T1"
     assert client.starts[0]["recipient_user_id"] == "U1"
     assert client.starts[0]["task_display_mode"] == "plan"
-    assert client.starts[0]["chunks"][0]["title"] == "Working on your request"
+    assert client.starts[0]["chunks"][0]["title"] == "Understanding the request"
     assert client.starts[0]["chunks"][1]["title"] == "Understanding the request"
     assert len(client.appends) == 1
-    prior_chunk, active_chunk = client.appends[0]["chunks"]
+    prior_chunk, active_chunk, plan_chunk = client.appends[0]["chunks"]
     assert prior_chunk["title"] == "Understanding the request"
     assert prior_chunk["status"] == "complete"
     assert active_chunk["title"] == "Searching company knowledge"
     assert active_chunk["status"] == "in_progress"
+    assert plan_chunk == {"type": "plan_update", "title": "Searching company knowledge"}
     rendered_answer = client.stops[0]["chunks"][-1]["text"]
     assert rendered_answer == "Grounded answer."
     assert "Sources" not in rendered_answer
@@ -533,19 +534,47 @@ async def test_completed_stream_shows_a_stable_elapsed_time(
     await _open_surface(publisher, run_id)
     await _deliver(publisher, ledger, run_id, AgentResponse(answer="Grounded answer"))
 
-    assert client.stops[0]["chunks"][1] == {
+    assert client.stops[0]["chunks"][2] == {
         "type": "plan_update",
         "title": "Answered in 40s",
     }
     assert len(client.stops) == 1
     assert client.stops[0]["session_status"] == "active"
     final_chunks = client.stops[0]["chunks"]
+    assert final_chunks[0]["type"] == "task_update"
+    assert final_chunks[0]["title"] == "Understanding the request"
+    assert final_chunks[0]["status"] == "complete"
+    assert final_chunks[0]["hide_title"] is False
+    assert final_chunks[1]["type"] == "task_update"
+    assert final_chunks[1]["title"] == "Answer ready"
+    assert final_chunks[1]["status"] == "complete"
+    assert final_chunks[1]["hide_title"] is False
     assert final_chunks[-1]["type"] == "markdown_text"
     assert "Grounded answer" in final_chunks[-1]["text"]
     assert client.posts == []
     assert client.updates == []
     assert ledger.delivery.stream_state is SlackStreamState.STOPPED
     assert ledger.delivery.delivery_status is DeliveryStatus.DELIVERED
+
+
+async def test_completed_plan_keeps_the_last_stage_and_shows_answer_ready() -> None:
+    ledger = FakeLedger()
+    client = FakeSlackClient()
+    publisher = _publisher(client, ledger)
+    run_id = uuid4()
+
+    await _open_surface(publisher, run_id)
+    assert await publisher.publish_progress(run_id, _progress(run_id, 60, ProgressStage.DRAFTING))
+    await _deliver(publisher, ledger, run_id, AgentResponse(answer="Grounded answer"))
+
+    task_chunks = [chunk for chunk in client.stops[0]["chunks"] if chunk["type"] == "task_update"]
+    assert task_chunks[0]["title"] == "Drafting a grounded answer"
+    assert task_chunks[0]["status"] == "complete"
+    assert task_chunks[0]["hide_title"] is False
+    assert task_chunks[1]["title"] == "Answer ready"
+    assert task_chunks[1]["status"] == "complete"
+    assert task_chunks[1]["hide_title"] is False
+    assert task_chunks[0]["id"] != task_chunks[1]["id"]
 
 
 async def test_progress_promotes_the_newest_stage_and_retains_prior_steps() -> None:
@@ -558,15 +587,17 @@ async def test_progress_promotes_the_newest_stage_and_retains_prior_steps() -> N
     assert await publisher.publish_progress(run_id, _progress(run_id, 10, ProgressStage.THINKING))
     assert await publisher.publish_progress(run_id, _progress(run_id, 20, ProgressStage.SEARCHING))
 
-    first_prior, first_active = client.appends[0]["chunks"]
+    first_prior, first_active, first_plan = client.appends[0]["chunks"]
     assert first_prior["status"] == "complete"
     assert first_active["status"] == "in_progress"
     assert first_active["title"] == "Understanding the question"
-    second_prior, second_active = client.appends[1]["chunks"]
+    assert first_plan == {"type": "plan_update", "title": "Understanding the question"}
+    second_prior, second_active, second_plan = client.appends[1]["chunks"]
     assert second_prior["status"] == "complete"
     assert second_prior["title"] == "Understanding the question"
     assert second_active["status"] == "in_progress"
     assert second_active["title"] == "Searching company knowledge"
+    assert second_plan == {"type": "plan_update", "title": "Searching company knowledge"}
 
 
 async def test_stream_acknowledgement_retry_reuses_persisted_remote_timestamp() -> None:
@@ -619,6 +650,9 @@ async def test_cancellation_cleanup_waits_for_inflight_stream_identity() -> None
 
     assert len(client.stops) == 1
     assert client.stops[0]["ts"] == "2.0"
+    assert client.stops[0]["chunks"][0]["title"] == "Work stopped"
+    assert client.stops[0]["chunks"][0]["status"] == "error"
+    assert client.stops[0]["chunks"][0]["hide_title"] is False
     assert client.stops[0]["chunks"][-1]["text"] == "Stopped at your request."
     assert client.posts == []
     assert client.updates == []

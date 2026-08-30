@@ -165,8 +165,10 @@ Slack hides citation markers and the source list by default; the retrieval plann
 when the user directly asks for sources, citations, evidence, provenance, or supporting documents.
 
 Each newly reached stage becomes the one active task; the preceding task is completed under its
-stable ID, so Slack can keep completed work visible while presenting the latest work first. On
-completion, the active task is hidden and the plan title becomes `Answered in …`, using the
+stable ID, so Slack can keep completed work visible while presenting the latest work first. The plan
+title follows the current stage rather than repeating Slack's session-level "is working" loader.
+On completion, the last active task is marked complete under its original label, a visible
+`Answer ready` task is added, and the plan title becomes `Answered in …`, using the
 stream's persisted start timestamp. Exact plan animation and completed-task ordering remain Slack
 client behavior.
 
@@ -184,7 +186,11 @@ before the publisher uses a deterministic immutable final post; a later match, f
 result is retried rather than guessed. It does not rewrite the finalized message through
 `chat.update`.
 
-Agent Sessions supply Slack's native processing loader and Stop control. A verified
+Agent Sessions supply Slack's native processing loader and Stop control. The processing row is
+Slack client chrome: the default copy is `{bot display name} is working…`, and native Stop is
+revealed on hover of that row. `agents.sessions.setStatus` has no display, hover, or loading-copy
+argument, so the app leaves that loader as Slack draws it rather than emulating Stop with a second
+control. A verified
 `agent_session_stopped` event atomically records an event-to-run claim before sending the Inngest
 cancellation event. Final delivery claim and Stop lock the same run as their linearization point:
 cancellation prevents delivery if it commits first, while a `delivering` run rejects a late Stop and

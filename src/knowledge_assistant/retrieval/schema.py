@@ -18,7 +18,6 @@ class KnowledgeSchema:
     content_column: str = "content_text"
     summary_column: str = "summary"
     type_column: str = "artifact_type"
-    metadata_column: str = "metadata_json"
     fts_table: str = "artifacts_fts"
     fts_id_column: str = "artifact_id"
 

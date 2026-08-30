@@ -78,18 +78,6 @@ TURN_WAIT_INTERVAL = timedelta(seconds=15)
 ProcessorProvider = Callable[[], StreamingQuestionProcessor]
 
 
-def _log_safe_error_publish_failure(job: QuestionJob, exc: Exception) -> None:
-    """Log only the provider exception class; Slack error text can contain sensitive data."""
-
-    logger.error(
-        "slack_safe_error_publish_failed",
-        agent_run_id=str(job.agent_run_id),
-        conversation_id=job.conversation_id,
-        error_code="slack_safe_error_publish_failed",
-        exception_class=type(exc).__name__,
-    )
-
-
 def create_inngest_client(settings: SlackApplicationSettings) -> inngest.Inngest:
     return inngest.Inngest(app_id=INNGEST_APP_ID, is_production=settings.is_production)
 

@@ -135,7 +135,8 @@ forever.
 ## Stop targeting
 
 Slack emits `agent_session_stopped` for a thread-scoped session, but application cancellation must
-target an individual run. The handler therefore does not simply cancel the newest database row.
+target an individual run. The native Stop control is drawn by Slack on the session processing row
+and is hover-revealed in the desktop client; application code cannot invert that presentation. The handler therefore does not simply cancel the newest database row.
 It validates the workspace/channel/root thread, compares reported streaming message timestamps
 when present, uses event/message time as a causal upper bound when necessary, and atomically stores
 the selected run and accepted/rejected result under the Stop event ID.

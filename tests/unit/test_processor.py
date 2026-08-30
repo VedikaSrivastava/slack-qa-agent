@@ -105,12 +105,25 @@ def test_langfuse_handler_uses_parsed_settings(
     langfuse_client.assert_called_once_with(
         public_key="lf_pk_test",
         secret_key="lf_sk_test",
-        base_url="http://langfuse.test:3000/",
+        # No trailing slash: the SDK appends the OTEL ingestion path to this value, and a
+        # double slash makes Langfuse redirect the export away with a 308.
+        base_url="http://langfuse.test:3000",
         environment="test",
         release="0.1.0",
     )
     callback_handler.assert_called_once_with(public_key="lf_pk_test")
     assert handler is callback_handler.return_value
+
+
+@patch("knowledge_assistant.agent.processor.CallbackHandler")
+@patch("knowledge_assistant.agent.processor.Langfuse")
+def test_langfuse_handler_is_absent_without_credentials(
+    langfuse_client: Mock,
+    callback_handler: Mock,
+) -> None:
+    assert _create_langfuse_handler(_settings()) is None
+    langfuse_client.assert_not_called()
+    callback_handler.assert_not_called()
 
 
 def _evidence() -> dict[str, Any]:

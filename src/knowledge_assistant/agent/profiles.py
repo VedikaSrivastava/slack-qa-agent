@@ -82,9 +82,6 @@ class AgentProfile:
     def _temperature_for(self, model_name: str) -> float | None:
         return None if model_name.startswith("gpt-5") else self.temperature
 
-    def answer_temperature(self) -> float | None:
-        return self._temperature_for(self.answer_model())
-
     def router_temperature(self) -> float | None:
         return self._temperature_for(self.router_model())
 

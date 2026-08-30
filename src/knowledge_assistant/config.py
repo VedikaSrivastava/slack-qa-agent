@@ -96,15 +96,6 @@ class AgentRuntimeSettings(DatabaseSettings):
     def is_production(self) -> bool:
         return self.app_env == "production"
 
-    @property
-    def langfuse_enabled(self) -> bool:
-        return bool(
-            self.langfuse_public_key
-            and self.langfuse_public_key.get_secret_value().strip()
-            and self.langfuse_secret_key
-            and self.langfuse_secret_key.get_secret_value().strip()
-        )
-
 
 class SlackApplicationSettings(AgentRuntimeSettings):
     """Validated Slack runtime settings; invalid configuration stops startup."""

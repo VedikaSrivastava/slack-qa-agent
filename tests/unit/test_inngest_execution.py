@@ -216,19 +216,6 @@ class FakeWorkflowLedger(FakeResultLedger):
         recovered.sort(key=lambda item: item[0])
         return [message for _, message in recovered[-limit:]]
 
-    async def get_recent_suppressed_thread_messages(
-        self,
-        *,
-        conversation_id: str,
-        before_message_ts: str,
-        limit: int,
-    ) -> list[str]:
-        return await self.get_recent_thread_recovery_messages(
-            conversation_id=conversation_id,
-            before_message_ts=before_message_ts,
-            limit=limit,
-        )
-
     async def claim_turn(self, event_id: str) -> SlackTurnClaim:
         turn = self.turns[event_id]
         scripted_outcomes = self.turn_claim_scripts.get(event_id)

@@ -63,19 +63,8 @@ def test_agent_runtime_is_independent_from_slack() -> None:
     )
 
     assert settings.openai_api_key.get_secret_value() == "test-key"
-    assert settings.langfuse_enabled is False
-
-
-def test_langfuse_is_enabled_only_when_both_keys_are_present() -> None:
-    settings = AgentRuntimeSettings(
-        _env_file=None,
-        openai_api_key="test-key",
-        database_url="postgresql+asyncpg://user:password@postgres/test",
-        langfuse_public_key="lf_pk_test",
-        langfuse_secret_key="lf_sk_test",
-    )
-
-    assert settings.langfuse_enabled is True
+    assert settings.langfuse_public_key is None
+    assert settings.langfuse_secret_key is None
 
 
 @pytest.mark.parametrize(

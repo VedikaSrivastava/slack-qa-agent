@@ -14,8 +14,8 @@ configuration and end-to-end testing. Supporting implementation documentation li
   grounding failures may reach the verifier.
 - [Implementation journal](implementation-journal.md): detailed investigation history, including
   the two-stage Slack manifest setup blocker, Slack-derived state retention gap, Inngest readiness
-  gate, Stop recovery and migration `0002`, per-role model selection, rejected approaches, resolved
-  failure modes, and remaining live validation.
+  gate, native Stop hover as Slack client chrome, Stop recovery and migration `0002`, per-role
+  model selection, rejected approaches, resolved failure modes, and remaining live validation.
 - [Evaluations](evaluations.md): immutable and robustness datasets, retrieval screening, focused
   model comparison, graph follow-up coverage, metrics, the repeats-before-acceptance rule, the
   prompt version history, and tracked report-preservation rules.

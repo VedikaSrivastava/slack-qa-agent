@@ -56,6 +56,41 @@ The current platform provides:
 The implementation uses the current `agents.sessions.setStatus` API. It does not use the legacy
 `assistant.threads.*` methods or Bolt's older Assistant class.
 
+### Native Stop hover is Slack client chrome
+
+While a session is `processing` and the app subscribes to `agent_session_stopped`, Slack draws two
+surfaces at once:
+
+1. the streaming plan on the message (code-owned stage labels);
+2. a session processing row whose default copy is `{bot display name} is working…`.
+
+On the desktop client, native Stop replaces that session row only on hover. The desired invert —
+Stop as the default, with session status on hover, using the same spinner animation — is not
+available. Official Agent Sessions documentation states that `agents.sessions.setStatus` shows a
+standard “Working…” loading UX and does not accept a custom loading message. The method arguments
+are status, thread identity, optional title/initiator, and optional appearance overrides. There is
+no display, hover, or Stop-first parameter.
+
+Potential fixes that were not taken:
+
+- **Invert the native hover through the sessions API.** Not possible with the current
+  `agents.sessions.setStatus` contract.
+- **Set the session to `active` while the stream is still open** to hide `{bot} is working…`.
+  That also removes native Stop, because Stop is shown only while the session is `processing`.
+- **Add a custom always-visible Block Kit Stop button** in the thread or stream. That would be a
+  second control next to Slack's hover Stop, needs an Interactivity Request URL, and Slack's
+  streaming guidance allows Block Kit on `chat.stopStream` rather than on a live start/append
+  stream, so a button on the in-progress plan is unlikely to be clickable when it is needed.
+- **Return to legacy `assistant.threads.setStatus`** with a free-text status or `loading_messages`.
+  That path is deprecated, still would not invert Stop hover, and this repository already uses the
+  current sessions API.
+- **Override `username` on `setStatus`.** Appearance overrides change the name/icon on the loading
+  surface; they do not make Stop the default and they require `chat:write.customize`.
+
+The kept behavior is native `processing` plus `agent_session_stopped`. Testers should hover the
+session working line. A future Slack API that exposes Stop-first display would be the clean fix;
+until then the app should not emulate Stop.
+
 ### Manifest import observation
 
 Saving a manifest with an HTTPS request URL does not always verify that URL automatically. Slack
@@ -859,6 +894,9 @@ that failed attempt, and its generated reports were deleted.
 | Progress only inside the model-constrained function | Expanded | A separate initializer makes the loader responsive under model load. |
 | Inngest concurrency as the only lock | Rejected | Cross-function ordering needs a database invariant. |
 | Cancel whichever run is newest | Rejected | Delayed Stop could cancel the wrong turn. |
+| Invert native Stop hover via `setStatus` | Not available | Slack shows `{bot} is working…` by default and Stop only on hover; the sessions API has no display or loading-copy argument. |
+| Hide the session loader while work continues | Rejected | Leaving `processing` removes native Stop. |
+| Custom always-visible Block Kit Stop button | Deferred | Would duplicate Slack's hover Stop, needs Interactivity, and is unlikely to be clickable on a live stream. |
 | Persist Stop outcome before cancellation handoff | Implemented | Makes retries and handoff loss safe. |
 | Run Slack authorization test per event | Removed | Network latency does not belong in the acknowledgement path. |
 | Respond to every message in an owned thread | Rejected | The bot would interrupt human discussion. |
@@ -901,7 +939,8 @@ exercise these cases in the target workspace:
 3. root mention, explicit mentioned follow-up, and clear unmentioned follow-up;
 4. greeting, unclear initial request, context-resolved follow-up, and out-of-scope request;
 5. native stage progression and verified final chunk;
-6. Stop before model work, during a model request, and immediately before delivery;
+6. Stop before model work, during a model request, and immediately before delivery; native Stop is
+   hover-revealed on the session `is working…` line and cannot be made the default;
 6a. Stop mid-run followed by an explicit `continue` mention, confirming the original question is
     recovered rather than re-requested;
 6b. a terse `please try again` after a delivered answer, confirming the responder classifier uses

@@ -9,7 +9,9 @@ than this project needs.
 
 The local environment instead uses Langfuse as an optional trace UI. Its Docker Compose
 `observability` profile keeps traces, spans, model calls, retrieval steps, metadata, latency, and
-token usage on the developer machine.
+token usage on the developer machine. MinIO must contain a `langfuse` bucket before the OTEL
+ingestion path can persist events; the compose MinIO service creates that directory on startup so
+fresh and existing volumes do not 500 every export.
 
 Evaluation remains separate from observability. The deterministic evaluator writes sanitized JSON
 reports to `evals/reports/`, where reviewed, authorized evidence can be tracked and unaccepted

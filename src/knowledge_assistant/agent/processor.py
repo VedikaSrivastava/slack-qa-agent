@@ -478,12 +478,17 @@ def _create_langfuse_handler(settings: AgentRuntimeSettings) -> CallbackHandler 
     if not public_key or not secret_key:
         return None
 
+    # AnyHttpUrl normalizes to a trailing slash, and the SDK appends "/api/public/otel/..." to
+    # this value. The resulting double slash makes Langfuse answer with a 308 redirect that the
+    # OTLP span exporter does not follow, so every trace batch is silently dropped.
+    base_url = str(settings.langfuse_base_url).rstrip("/")
+
     # Creating the client registers it under the public key. CallbackHandler then resolves that
     # configured instance without depending on settings-file values being exported to os.environ.
     Langfuse(
         public_key=public_key,
         secret_key=secret_key,
-        base_url=str(settings.langfuse_base_url),
+        base_url=base_url,
         environment=settings.app_env,
         release=APPLICATION_VERSION,
     )

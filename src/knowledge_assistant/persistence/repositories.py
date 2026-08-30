@@ -1148,19 +1148,6 @@ class PostgresRunLedger:
             )
             return list(reversed([str(row.message_text) for row in rows]))
 
-    async def get_recent_suppressed_thread_messages(
-        self,
-        *,
-        conversation_id: str,
-        before_message_ts: str,
-        limit: int,
-    ) -> list[str]:
-        return await self.get_recent_thread_recovery_messages(
-            conversation_id=conversation_id,
-            before_message_ts=before_message_ts,
-            limit=limit,
-        )
-
     async def claim_turn(self, event_id: str) -> SlackTurnClaim:
         normalized_event_id = _validate_required_identity(event_id, "Slack event ID", 512)
         async with self._engine.begin() as connection:

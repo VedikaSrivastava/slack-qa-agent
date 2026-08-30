@@ -165,6 +165,12 @@ and then ask a question:
 Replies in the same Slack thread continue the same agent conversation. Mention QA Agent again for
 an explicit follow-up; clear unmentioned follow-ups are handled conservatively.
 
+While the agent is working, Slack shows the current step on the streaming plan and a separate
+session line (`QA Agent Dev is working…`). Hover that session line to reveal native **Stop**. The
+app cannot invert that hover or change the loading copy; Slack owns that chrome. The investigation
+and alternatives that were not taken are in
+[the implementation journal](docs/implementation-journal.md#native-stop-hover-is-slack-client-chrome).
+
 ## Troubleshooting
 
 If Slack cannot verify the Request URL:
@@ -195,6 +201,8 @@ If progress or Stop is missing:
 
 - confirm the Slack Agent feature is enabled and the app has `assistant:write`;
 - confirm `agent_session_stopped` is subscribed;
+- hover the session line `QA Agent Dev is working…` — Slack shows native Stop only on hover, and
+  the app cannot make that control the default;
 - inspect logs for `slack_stream_open_failed`; a stream-open failure still permits one final answer.
 
 ## Run checks

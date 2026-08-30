@@ -115,7 +115,11 @@ services:
   langfuse-minio:
     image: minio/minio:latest
     profiles: [observability]
-    command: ["server", "/data", "--console-address", ":9001"]
+    # MinIO treats first-level /data directories as buckets. Langfuse uploads OTEL
+    # events to bucket `langfuse`; without it, every ingestion request 500s.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mkdir -p /data/langfuse && minio server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio_local_dev
