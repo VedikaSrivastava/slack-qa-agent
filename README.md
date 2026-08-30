@@ -167,9 +167,7 @@ an explicit follow-up; clear unmentioned follow-ups are handled conservatively.
 
 While the agent is working, Slack shows the current step on the streaming plan and a separate
 session line (`QA Agent Dev is working…`). Hover that session line to reveal native **Stop**. The
-app cannot invert that hover or change the loading copy; Slack owns that chrome. The investigation
-and alternatives that were not taken are in
-[the implementation journal](docs/implementation-journal.md#native-stop-hover-is-slack-client-chrome).
+app cannot invert that hover or change the loading copy; Slack owns that chrome.
 
 ## Troubleshooting
 
@@ -228,11 +226,12 @@ does not require Docker, Slack credentials, Langfuse, PostgreSQL, or a hosted ev
 
 ```bash
 uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
-  --repeats 3 --env-file .env.local --output-dir evals/reports/submission-final-v22
+  --repeats 3 --env-file .env.local --output-dir evals/reports/<label>
 ```
 
 Use at least three repeats before accepting a change. A single repeat cannot separate a real
-improvement from live-model variance, and it has already hidden one regression in this repository.
+improvement from live-model variance. Reports are written under `evals/reports/` locally and are
+not committed.
 
 Add a `run` when you need the generated answer text rather than metrics; the `matrix` report stores
 metrics only. `run` refuses to overwrite an existing path, so reruns need a new filename:
@@ -240,7 +239,7 @@ metrics only. `run` refuses to overwrite an existing path, so reruns need a new 
 ```bash
 uv run python -m knowledge_assistant.evals run --suite full \
   --profile split-gpt-5.4-hybrid --env-file .env.local \
-  --output evals/reports/submission-final-v22/answers.json
+  --output evals/reports/<label>/answers.json
 ```
 
 This live command sends the seven questions, retrieved evidence, and generated answers to OpenAI.
@@ -262,30 +261,21 @@ Latest matrix run (`split-gpt-5.4-hybrid`, prompt `v22`, three repeats, 21 case-
 strict-contract pass on every repeat, 1.0 operations contract, 0 errors, no budget violations, and
 no flaky cases. The single persistent failure is `official-blueharbor-defection-risk`, which fails
 `exact_dates` when it answers and `answerability_behavior` on the two case-runs where it abstains.
-Full metrics and the prompt-version history are in [Evaluation strategy](docs/evaluations.md).
 
 ### Optional semantic evaluation: authorization required
 
 A judge run additionally sends generated answers and reference answers to the judge model.
-No authorized judge run has been executed for `split-gpt-5.4-hybrid` yet; use the command below for
-historical candidate diagnostics:
+No authorized judge run has been executed for `split-gpt-5.4-hybrid` yet:
 
 ```bash
 uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
   --profiles split-gpt-5.4-hybrid --judge-model gpt-5 \
   --env-file .env.local --confirm-data-transfer
-``` 
+```
 
-Judge output is a candidate-defined diagnostic, not an assignment pass threshold. Future judge
-protocol-v5 reports record the explicit transfer acknowledgement and combine semantic answer
-quality with the strict deterministic contract in `task_quality_passed`. The default take-home
-evidence is the official deterministic run plus manual review. Derived and multi-turn suites are
-candidate-authored regression checks, not held-out proof. See
-[Evaluation strategy](docs/evaluations.md) for the complete policy and production evaluation plan.
-
-Every `evals/reports/candidate-*` directory lacks documented authorization metadata and is
-unaccepted. Preserve these artifacts only for audit; do not quote their rates or use them as
-submission evidence.
+Judge output is a diagnostic, not an assignment pass threshold. The default take-home evidence is
+the official deterministic run plus manual review. Derived and multi-turn suites are
+candidate-authored regression checks, not held-out proof.
 
 When dependencies change, regenerate the lockfile at the repository root:
 
