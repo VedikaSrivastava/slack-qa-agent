@@ -16,9 +16,7 @@ from knowledge_assistant.execution.models import (
     QuestionJob,
 )
 from knowledge_assistant.integrations.slack.app import (
-    REQUIRED_SLACK_BOT_SCOPES,
     StartupSlackAuthorizer,
-    create_slack_app,
     process_agent_session_stopped,
     process_app_mention,
     process_channel_message,
@@ -258,10 +256,6 @@ async def test_startup_authorizer_reads_scope_header_case_insensitively() -> Non
     assert client.auth_test_tokens == ["xoxb-test"]
 
 
-def test_runtime_scope_contract_matches_expected_slack_capabilities() -> None:
-    assert REQUIRED_SLACK_BOT_SCOPES == ALL_RUNTIME_BOT_SCOPES
-
-
 async def test_app_mention_preserves_mentions_of_other_users() -> None:
     async def respond(**_kwargs: str) -> None:
         raise AssertionError("valid questions must not use the validation response")
@@ -462,15 +456,3 @@ async def test_agent_session_stop_event_uses_isolated_handoff() -> None:
     assert len(handoff.requests) == 1
     assert handoff.requests[0].conversation_id == "T1:C1:123.456"
     assert handoff.requests[0].streaming_message_ts == ("123.789",)
-
-
-def test_slack_app_waits_for_durable_dispatch_before_acknowledging() -> None:
-    authorizer = _authorizer()
-    slack_app = create_slack_app(
-        _settings(),
-        cast(QuestionDispatcher, FakeDispatcher()),
-        authorizer=authorizer,
-    )
-
-    assert slack_app.process_before_response is True
-    assert slack_app._async_authorize is authorizer

@@ -9,11 +9,15 @@ import sys
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from knowledge_assistant.config import get_database_settings
+from knowledge_assistant.persistence.checkpoint_serialization import create_checkpoint_serializer
 
 
 async def setup_checkpoints() -> None:
     settings = get_database_settings()
-    async with AsyncPostgresSaver.from_conn_string(settings.psycopg_database_url()) as saver:
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.psycopg_database_url(),
+        serde=create_checkpoint_serializer(),
+    ) as saver:
         await saver.setup()
 
 

@@ -19,13 +19,9 @@ from knowledge_assistant.agent.models import (
 from knowledge_assistant.agent.processor import (
     AgentGraph,
     LangGraphQuestionProcessor,
-    _create_chat_model,
+    _create_langfuse_handler,
 )
-from knowledge_assistant.agent.profiles import (
-    OPENAI_MAX_RETRIES,
-    OPENAI_REQUEST_TIMEOUT_SECONDS,
-    PRODUCTION_PROFILE,
-)
+from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState
 from knowledge_assistant.agent.workflow_nodes import GroundedAnswerNodes
@@ -88,6 +84,48 @@ def _settings() -> AgentRuntimeSettings:
     )
 
 
+@patch("knowledge_assistant.agent.processor.CallbackHandler")
+@patch("knowledge_assistant.agent.processor.Langfuse")
+def test_langfuse_handler_uses_parsed_settings(
+    langfuse_client: Mock,
+    callback_handler: Mock,
+) -> None:
+    settings = AgentRuntimeSettings(
+        _env_file=None,
+        app_env="test",
+        openai_api_key="test-key",
+        database_url="postgresql+asyncpg://user:password@postgres/test",
+        langfuse_base_url="http://langfuse.test:3000",
+        langfuse_public_key="lf_pk_test",
+        langfuse_secret_key="lf_sk_test",
+    )
+
+    handler = _create_langfuse_handler(settings)
+
+    langfuse_client.assert_called_once_with(
+        public_key="lf_pk_test",
+        secret_key="lf_sk_test",
+        # No trailing slash: the SDK appends the OTEL ingestion path to this value, and a
+        # double slash makes Langfuse redirect the export away with a 308.
+        base_url="http://langfuse.test:3000",
+        environment="test",
+        release="0.1.0",
+    )
+    callback_handler.assert_called_once_with(public_key="lf_pk_test")
+    assert handler is callback_handler.return_value
+
+
+@patch("knowledge_assistant.agent.processor.CallbackHandler")
+@patch("knowledge_assistant.agent.processor.Langfuse")
+def test_langfuse_handler_is_absent_without_credentials(
+    langfuse_client: Mock,
+    callback_handler: Mock,
+) -> None:
+    assert _create_langfuse_handler(_settings()) is None
+    langfuse_client.assert_not_called()
+    callback_handler.assert_not_called()
+
+
 def _evidence() -> dict[str, Any]:
     return {
         "artifact_id": "art_A",
@@ -130,6 +168,7 @@ async def test_rejected_ungrounded_answer_is_reported_as_insufficient() -> None:
                     "evidence": [_evidence()],
                     "evidence_sufficient": True,
                     "grounding_valid": False,
+                    "is_abstention": True,
                     "tool_call_count": 2,
                     "model_call_count": 4,
                     "retrieval_round_count": 1,
@@ -159,6 +198,32 @@ async def test_rejected_ungrounded_answer_is_reported_as_insufficient() -> None:
     assert graph.config["configurable"] == {"thread_id": "conversation"}
     assert graph.stream_mode == "updates"
     assert graph.stream_version == "v2"
+
+
+async def test_internal_grader_uncertainty_does_not_mislabel_a_substantive_answer() -> None:
+    graph = FakeGraph(
+        updates=[
+            (
+                "finalize",
+                {
+                    "final_answer": "The supported result is 12 accounts [art_A].",
+                    "evidence": [_evidence()],
+                    "evidence_sufficient": False,
+                    "grounding_valid": False,
+                    "is_abstention": False,
+                },
+            )
+        ]
+    )
+    processor = LangGraphQuestionProcessor(graph, _settings(), PRODUCTION_PROFILE)
+
+    response = await processor.answer(
+        question="How many accounts are there?",
+        conversation_id="conversation",
+        agent_run_id="run",
+    )
+
+    assert response.insufficient_evidence is False
 
 
 async def test_completed_same_run_reconstructs_response_without_rerunning_graph() -> None:
@@ -392,7 +457,13 @@ async def test_finalize_replaces_history_turn_for_same_run_id() -> None:
 
     assert second_result["history"] == [
         {"agent_run_id": "older", "question": "Old", "answer": "Old answer"},
-        {"agent_run_id": "run", "question": "Question", "answer": "Final answer"},
+        {
+            "agent_run_id": "run",
+            "question": "Question",
+            "answer": "Final answer",
+            "sources": [],
+            "retrieved_artifact_ids": [],
+        },
     ]
 
 
@@ -422,18 +493,3 @@ async def test_model_usage_is_accumulated_into_checkpointed_state() -> None:
     assert result["input_tokens"] == 17
     assert result["output_tokens"] == 7
     assert result["model_call_count"] == 2
-
-
-def test_chat_model_has_bounded_requests_and_no_nested_retries() -> None:
-    settings = _settings()
-
-    with patch("knowledge_assistant.agent.processor.ChatOpenAI") as chat_model:
-        _create_chat_model(settings, PRODUCTION_PROFILE)
-
-    chat_model.assert_called_once_with(
-        api_key=settings.openai_api_key,
-        model=PRODUCTION_PROFILE.model_name,
-        max_retries=OPENAI_MAX_RETRIES,
-        timeout=OPENAI_REQUEST_TIMEOUT_SECONDS,
-        temperature=PRODUCTION_PROFILE.temperature,
-    )

@@ -59,6 +59,7 @@ def _turn_record(
         user_id=user_id,
         message_ts="2.000001",
         thread_ts="1.000001",
+        message_text="What changed?",
         conversation_id="T1:C1:1.000001",
         kind=SlackTurnKind.EXPLICIT_MENTION,
         status=status,

@@ -18,10 +18,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY tests ./tests
 COPY alembic ./alembic
 COPY scripts ./scripts
-COPY AGENTS.md ./AGENTS.md
-COPY docs ./docs
-COPY evals/results/README.md ./evals/results/README.md
-COPY data/README.md ./data/README.md
 # Keep the assignment fixture out of the runtime image, but include it here so the supplied-schema
 # integration test cannot silently skip during image validation.
 COPY data/synthetic_startup.sqlite ./data/synthetic_startup.sqlite

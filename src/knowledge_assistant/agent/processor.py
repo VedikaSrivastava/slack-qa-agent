@@ -9,9 +9,12 @@ from typing import Any, Literal, Protocol, cast
 import anyio
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from langfuse import Langfuse
+from langfuse.langchain import CallbackHandler
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-from knowledge_assistant.agent.citations import cited_artifact_ids
+from knowledge_assistant.agent.citations import references_for_cited_evidence
 from knowledge_assistant.agent.graph import build_graph
 from knowledge_assistant.agent.models import (
     AgentResponse,
@@ -26,6 +29,7 @@ from knowledge_assistant.agent.profiles import (
     OPENAI_MAX_RETRIES,
     OPENAI_REQUEST_TIMEOUT_SECONDS,
     AgentProfile,
+    ReasoningEffort,
 )
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState
@@ -37,6 +41,7 @@ from knowledge_assistant.config import (
     RETRIEVAL_VERSION,
     AgentRuntimeSettings,
 )
+from knowledge_assistant.persistence.checkpoint_serialization import create_checkpoint_serializer
 from knowledge_assistant.retrieval.models import EvidenceItem
 from knowledge_assistant.retrieval.repository import SQLiteKnowledgeRepository
 
@@ -72,10 +77,12 @@ class LangGraphQuestionProcessor:
         graph: AgentGraph,
         settings: AgentRuntimeSettings,
         profile: AgentProfile,
+        langfuse_handler: CallbackHandler | None = None,
     ) -> None:
         self._graph = graph
         self._settings = settings
         self._profile = profile
+        self._langfuse_handler = langfuse_handler
 
     async def answer(
         self,
@@ -188,9 +195,15 @@ class LangGraphQuestionProcessor:
             "agent_run_id": agent_run_id,
             "conversation_id": conversation_id,
             "question_disposition": QuestionDisposition.KNOWLEDGE_QUESTION,
+            "show_sources": False,
+            "comparison_query": None,
             "search_queries": [],
             "account_lookup": None,
+            "account_lookup_coverage": None,
             "evidence": [],
+            "response_sources": [],
+            "response_mode": "answer",
+            "reuse_turn_id": None,
             "retrieval_round_count": 0,
             "tool_call_count": 0,
             "model_call_count": 0,
@@ -198,8 +211,11 @@ class LangGraphQuestionProcessor:
             "output_tokens": 0,
             "evidence_sufficient": False,
             "insufficiency_reason": "",
+            "supported_question_parts": [],
+            "missing_question_parts": [],
             "draft_answer": "",
             "final_answer": "",
+            "is_abstention": False,
             "grounding_valid": False,
             "grounding_issues": [],
         }
@@ -218,11 +234,15 @@ class LangGraphQuestionProcessor:
                 "conversation_id": conversation_id,
                 "prompt_version": PROMPT_VERSION,
                 "retrieval_version": RETRIEVAL_VERSION,
-                "model": self._profile.model_name,
+                "model": self._profile.answer_model(),
+                "classify_model": self._profile.model_name,
                 "agent_profile": self._profile.name,
                 "environment": self._settings.app_env,
                 "application_version": APPLICATION_VERSION,
+                "langfuse_session_id": conversation_id,
+                "langfuse_tags": ["slack-qa-agent", self._profile.name],
             },
+            "callbacks": ([self._langfuse_handler] if self._langfuse_handler else []),
         }
 
     def _final_event(self, agent_run_id: str, state: AgentState) -> FinalAnswerEvent:
@@ -340,30 +360,28 @@ def _response_from_state(state: AgentState) -> AgentResponse:
     if not isinstance(final_answer, str) or not final_answer:
         raise RuntimeError("Completed graph checkpoint has no final answer")
     evidence = [EvidenceItem.model_validate(item) for item in state.get("evidence", [])]
-    cited_ids = cited_artifact_ids(final_answer)
-    sources = [
-        EvidenceReference(
-            artifact_id=item.artifact_id,
-            title=item.title,
-            score=item.score,
-            snippet=item.snippet or None,
-        )
-        for item in evidence
-        if item.artifact_id in cited_ids
-    ]
+    explicit_sources = state.get("response_sources", [])
+    if explicit_sources:
+        sources = [EvidenceReference.model_validate(source) for source in explicit_sources]
+    else:
+        sources = references_for_cited_evidence(final_answer, evidence)
     disposition = QuestionDisposition(state["question_disposition"])
-    insufficient = disposition is QuestionDisposition.KNOWLEDGE_QUESTION and (
-        not bool(evidence)
-        or not state.get("evidence_sufficient", False)
-        or not state.get("grounding_valid", False)
+    insufficient = disposition is QuestionDisposition.KNOWLEDGE_QUESTION and bool(
+        state.get("is_abstention", False)
     )
     input_tokens = _nonnegative_count(state, "input_tokens")
     output_tokens = _nonnegative_count(state, "output_tokens")
     return AgentResponse(
         answer=final_answer,
         disposition=disposition,
+        show_sources=bool(state.get("show_sources", False)),
         sources=sources,
-        retrieved_artifact_ids=[item.artifact_id for item in evidence],
+        retrieved_artifact_ids=list(
+            dict.fromkeys(
+                [item.artifact_id for item in evidence]
+                or [source.artifact_id for source in sources]
+            )
+        ),
         tool_call_count=_nonnegative_count(state, "tool_call_count"),
         model_call_count=_nonnegative_count(state, "model_call_count"),
         retrieval_round_count=_nonnegative_count(state, "retrieval_round_count"),
@@ -373,33 +391,164 @@ def _response_from_state(state: AgentState) -> AgentResponse:
     )
 
 
-def _create_chat_model(settings: AgentRuntimeSettings, profile: AgentProfile) -> BaseChatModel:
+def _build_chat_model(
+    settings: AgentRuntimeSettings,
+    *,
+    model_name: str,
+    temperature: float | None,
+    reasoning_effort: ReasoningEffort | None,
+    max_retries: int | None,
+) -> BaseChatModel:
     model_options: dict[str, Any] = {
         "api_key": settings.openai_api_key,
-        "model": profile.model_name,
-        # Inngest owns durable retries. Disabling nested provider retries keeps one observable owner
-        # for repeated work, while the timeout bounds each individual model request.
-        "max_retries": OPENAI_MAX_RETRIES,
+        "model": model_name,
+        # Inngest owns durable retries in production, so nested provider retries default off to
+        # keep one observable owner for repeated work. Callers with no durable-retry layer
+        # (offline evaluation) pass a small `max_retries` so a transient connection blip does
+        # not fail the run. The timeout still bounds each individual request.
+        "max_retries": OPENAI_MAX_RETRIES if max_retries is None else max_retries,
         "timeout": OPENAI_REQUEST_TIMEOUT_SECONDS,
     }
-    if profile.temperature is not None:
-        model_options["temperature"] = profile.temperature
+    if temperature is not None:
+        model_options["temperature"] = temperature
+    if reasoning_effort is not None:
+        model_options["reasoning_effort"] = reasoning_effort
     return ChatOpenAI(**model_options)
+
+
+def _create_chat_model(
+    settings: AgentRuntimeSettings,
+    profile: AgentProfile,
+    *,
+    model_name: str | None = None,
+    max_retries: int | None = None,
+) -> BaseChatModel:
+    """Build one chat model for a profile role."""
+
+    resolved_model_name = model_name or profile.model_name
+    return _build_chat_model(
+        settings,
+        model_name=resolved_model_name,
+        temperature=profile._temperature_for(resolved_model_name),
+        reasoning_effort=profile.reasoning_effort,
+        max_retries=max_retries,
+    )
+
+
+def _create_role_models(
+    settings: AgentRuntimeSettings,
+    profile: AgentProfile,
+    *,
+    max_retries: int | None = None,
+) -> dict[str, BaseChatModel]:
+    """Reuse one client per distinct model name while honoring per-role overrides."""
+
+    models_by_name: dict[str, BaseChatModel] = {}
+
+    def model_for(name: str) -> BaseChatModel:
+        if name not in models_by_name:
+            models_by_name[name] = _create_chat_model(
+                settings,
+                profile,
+                model_name=name,
+                max_retries=max_retries,
+            )
+        return models_by_name[name]
+
+    return {
+        "default": model_for(profile.model_name),
+        "resolve": model_for(profile.resolve_model()),
+        "plan": model_for(profile.plan_model()),
+        "grade": model_for(profile.grade_model()),
+        "verify": model_for(profile.verify_model()),
+        "answer": model_for(profile.answer_model()),
+        "repair": model_for(profile.repair_model()),
+    }
+
+
+def _create_langfuse_handler(settings: AgentRuntimeSettings) -> CallbackHandler | None:
+    """Initialize the SDK from parsed settings and return its LangChain callback."""
+
+    public_key_setting = settings.langfuse_public_key
+    secret_key_setting = settings.langfuse_secret_key
+    if public_key_setting is None or secret_key_setting is None:
+        return None
+    public_key = public_key_setting.get_secret_value().strip()
+    secret_key = secret_key_setting.get_secret_value().strip()
+    if not public_key or not secret_key:
+        return None
+
+    # AnyHttpUrl normalizes to a trailing slash, and the SDK appends "/api/public/otel/..." to
+    # this value. The resulting double slash makes Langfuse answer with a 308 redirect that the
+    # OTLP span exporter does not follow, so every trace batch is silently dropped.
+    base_url = str(settings.langfuse_base_url).rstrip("/")
+
+    # Creating the client registers it under the public key. CallbackHandler then resolves that
+    # configured instance without depending on settings-file values being exported to os.environ.
+    Langfuse(
+        public_key=public_key,
+        secret_key=secret_key,
+        base_url=base_url,
+        environment=settings.app_env,
+        release=APPLICATION_VERSION,
+    )
+    return CallbackHandler(public_key=public_key)
 
 
 @asynccontextmanager
 async def create_question_processor(
-    settings: AgentRuntimeSettings, profile: AgentProfile
+    settings: AgentRuntimeSettings,
+    profile: AgentProfile,
+    *,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+    max_retries: int | None = None,
 ) -> AsyncIterator[StreamingQuestionProcessor]:
+    """Build a durable processor.
+
+    Production leaves ``checkpointer`` unset and gets a Postgres-backed saver so a run can
+    resume across process restarts. Offline evaluation and local scripts pass an in-process
+    saver (``InMemorySaver``) so the same graph runs with no database dependency; that path
+    still exercises the real nodes, prompts, retrieval, and model calls. ``max_retries``
+    overrides the (production-default) no-retry policy for callers without a durable-retry
+    layer.
+    """
+
     if not settings.knowledge_db_path.is_file():
         raise FileNotFoundError(f"Knowledge database does not exist: {settings.knowledge_db_path}")
-    model = _create_chat_model(settings, profile)
-    repository = SQLiteKnowledgeRepository(settings.knowledge_db_path)
+    role_models = _create_role_models(settings, profile, max_retries=max_retries)
+    langfuse_handler = _create_langfuse_handler(settings)
+    repository = SQLiteKnowledgeRepository(
+        settings.knowledge_db_path,
+        fts_candidate_multiplier=profile.fts_candidate_multiplier,
+        fts_first_pass_results_per_scenario=profile.fts_first_pass_results_per_scenario,
+    )
     await anyio.to_thread.run_sync(repository.validate_runtime_schema)
     retrieval_tools = KnowledgeRetrievalTools(repository)
-    async with AsyncPostgresSaver.from_conn_string(settings.psycopg_database_url()) as checkpointer:
-        workflow_nodes = GroundedAnswerNodes(model, retrieval_tools, profile)
+
+    @asynccontextmanager
+    async def _open_checkpointer() -> AsyncIterator[BaseCheckpointSaver[Any]]:
+        if checkpointer is not None:
+            yield checkpointer
+            return
+        async with AsyncPostgresSaver.from_conn_string(
+            settings.psycopg_database_url(),
+            serde=create_checkpoint_serializer(),
+        ) as postgres_saver:
+            yield postgres_saver
+
+    async with _open_checkpointer() as active_checkpointer:
+        workflow_nodes = GroundedAnswerNodes(
+            role_models["default"],
+            retrieval_tools,
+            profile,
+            resolve_model=role_models["resolve"],
+            plan_model=role_models["plan"],
+            grade_model=role_models["grade"],
+            verify_model=role_models["verify"],
+            answer_model=role_models["answer"],
+            repair_model=role_models["repair"],
+        )
         # LangGraph's compiled graph is generically typed by the framework; the protocol above
         # localizes that typing gap to this construction boundary.
-        graph = cast(AgentGraph, build_graph(workflow_nodes, checkpointer=checkpointer))
-        yield LangGraphQuestionProcessor(graph, settings, profile)
+        graph = cast(AgentGraph, build_graph(workflow_nodes, checkpointer=active_checkpointer))
+        yield LangGraphQuestionProcessor(graph, settings, profile, langfuse_handler)

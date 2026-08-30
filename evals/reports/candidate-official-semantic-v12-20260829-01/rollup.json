@@ -1,0 +1,34 @@
+{
+  "label": "candidate-official-semantic-v12-20260829-01",
+  "suite": "full",
+  "dataset_digest": "ac16383cd1ad83a28b5a5225e3f15ded8bf983425f6f6baa1e217f0fd456ee1c",
+  "annotation_digest": "9b1bdd0a7434bafd77d83776fc2c2d77cfbc755f0a21f8003d7c40de2e748578",
+  "evaluation_protocol_version": "v13",
+  "judge_protocol_version": "v3",
+  "application_version": "0.1.0",
+  "judge_model": "gpt-5",
+  "answer_quality_policy": {
+    "minimum_correctness": 4,
+    "minimum_completeness": 4,
+    "requires_no_material_error": true,
+    "requires_reference_consistency": true,
+    "assignment_defined": false
+  },
+  "prompt_version": "v13",
+  "retrieval_version": "v7",
+  "generated_at": "2026-08-29T23:59:02.481190+00:00",
+  "profiles": {
+    "balanced-gpt-4.1-mini": {
+      "case_count": 7,
+      "answer_quality_pass_rate": 0.7142857142857143,
+      "mean_correctness": 4.0,
+      "mean_completeness": 4.714285714285714,
+      "mean_conciseness": 2.2857142857142856,
+      "material_error_cases": 2,
+      "reference_consistency_failures": 2,
+      "strict_contract_pass_rate": 0.8571428571428571,
+      "quality_pass_but_contract_fail": 0,
+      "contract_pass_but_quality_fail": 1
+    }
+  }
+}

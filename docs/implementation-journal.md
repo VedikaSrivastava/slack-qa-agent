@@ -1,6 +1,6 @@
 # Implementation journal
 
-Last updated: 2026-08-27
+Last updated: 2026-08-30
 
 This is a factual engineering record of the implementation work, investigations, rejected
 approaches, failure modes, and remaining validation gaps. It is intentionally more detailed than
@@ -24,6 +24,10 @@ boundaries:
   when Slack's size limit requires them;
 - Agent Session Stop is supported through a durable, race-safe cooperative cancellation path;
 - greetings, unclear messages, and out-of-scope requests have explicit terminal behavior;
+- ordinary answers hide internal artifact markers; a source request renders saved provenance;
+- bounded turns retain compact source references and retrieved IDs so contextual follow-ups can
+  re-read trusted evidence and search only for gaps;
+- retrieval, model actions, history, evidence, context, and graph recursion have reviewed ceilings;
 - the supplied SQLite corpus is immutable and read-only;
 - PostgreSQL stores application run/delivery truth and LangGraph checkpoints;
 - Inngest owns background retries, scheduling, concurrency limits, and side-effect sequencing.
@@ -51,6 +55,51 @@ The current platform provides:
 
 The implementation uses the current `agents.sessions.setStatus` API. It does not use the legacy
 `assistant.threads.*` methods or Bolt's older Assistant class.
+
+### Native Stop hover is Slack client chrome
+
+While a session is `processing` and the app subscribes to `agent_session_stopped`, Slack draws two
+surfaces at once:
+
+1. the streaming plan on the message (code-owned stage labels);
+2. a session processing row whose default copy is `{bot display name} is working…`.
+
+On the desktop client, native Stop replaces that session row only on hover. The desired invert —
+Stop as the default, with session status on hover, using the same spinner animation — is not
+available. Official Agent Sessions documentation states that `agents.sessions.setStatus` shows a
+standard “Working…” loading UX and does not accept a custom loading message. The method arguments
+are status, thread identity, optional title/initiator, and optional appearance overrides. There is
+no display, hover, or Stop-first parameter.
+
+Potential fixes that were not taken:
+
+- **Invert the native hover through the sessions API.** Not possible with the current
+  `agents.sessions.setStatus` contract.
+- **Set the session to `active` while the stream is still open** to hide `{bot} is working…`.
+  That also removes native Stop, because Stop is shown only while the session is `processing`.
+- **Add a custom always-visible Block Kit Stop button** in the thread or stream. That would be a
+  second control next to Slack's hover Stop, needs an Interactivity Request URL, and Slack's
+  streaming guidance allows Block Kit on `chat.stopStream` rather than on a live start/append
+  stream, so a button on the in-progress plan is unlikely to be clickable when it is needed.
+- **Return to legacy `assistant.threads.setStatus`** with a free-text status or `loading_messages`.
+  That path is deprecated, still would not invert Stop hover, and this repository already uses the
+  current sessions API.
+- **Override `username` on `setStatus`.** Appearance overrides change the name/icon on the loading
+  surface; they do not make Stop the default and they require `chat:write.customize`.
+
+The kept behavior is native `processing` plus `agent_session_stopped`. Testers should hover the
+session working line. A future Slack API that exposes Stop-first display would be the clean fix;
+until then the app should not emulate Stop.
+
+### Manifest import observation
+
+Saving a manifest with an HTTPS request URL does not always verify that URL automatically. Slack
+can save the configuration while showing a banner with **Click here to verify**; the operator must
+use that action while the local tunnel and Slack ingress are running. Once verification succeeds,
+the saved manifest settings are applied. The dashboard can also warn that an Agent View should
+subscribe to `message.im` or `app_home_opened`; this application intentionally supports invited
+channel threads rather than direct messages or App Home, so the warning is non-blocking for this
+product scope.
 
 ## Progress and final-answer evolution
 
@@ -187,6 +236,90 @@ is:
 The classifier is deliberately behind Inngest instead of Slack's acknowledgement path. Explicit
 mentions do not pay for this classifier. The `explicit_mentions_only` configuration remains a
 product-policy switch, not a compatibility path.
+
+### Explicit recovery after a suppressed follow-up
+
+End-to-end testing found that an ordinary thread reply can reasonably be classified `uncertain`,
+which correctly prevents an unsolicited answer but can make a later short explicit mention appear
+to lack the immediately preceding question. The repair preserves the conservative responder policy:
+only a later explicit mention recovers up to three preceding suppressed human messages (4,000
+characters) as labelled, untrusted context. The explicit mention remains authoritative. This is
+not a transcript replay and does not change the policy for unmentioned replies.
+
+### Recovery after Stop, not only after silence
+
+Live testing found a second way to lose the question, which the suppressed-message recovery above
+did not cover. The sequence was:
+
+1. a user asks a full question with an explicit mention;
+2. the user clicks Slack's native Stop while the agent is working;
+3. the user then says `@QA Agent please continue`.
+
+The agent asked what request it should continue. The cause was that the two recovery paths did not
+overlap with the failure. Cancellation terminates a run without writing a LangGraph turn, so the
+cancelled question never entered conversation history; and the recovery query selected only
+`kind = follow_up AND status = suppressed` rows, whereas the lost question was an
+`explicit_mention` whose turn had completed normally as `routed` against a **cancelled** run. The
+question was durably recorded and simply not selected.
+
+Three fixes were needed together, and each was insufficient alone:
+
+- **The text was not stored.** `slack_turns` held identifiers and queue state but not the message
+  body, so no query could have recovered it. Migration `0002` adds `slack_turns.message_text` as a
+  `NOT NULL` column with a temporary `""` server default that is dropped immediately after backfill,
+  so existing rows stay valid without leaving a default that would silently accept empty text later.
+- **The query was too narrow.** `get_recent_suppressed_thread_messages` became
+  `get_recent_thread_recovery_messages`, which outer-joins `agent_runs` and accepts either a
+  suppressed follow-up or an explicit mention whose linked run is `cancelled` with
+  `cancellation_requested`. Both conditions describe the same situation: a human message that
+  produced no answer the user could read.
+- **The classifier could not see the last answer.** A terse `please try again` after a delivered
+  answer has no referent in isolation. `ResponderPromptVariant.LATEST_AGENT_CONTEXT` passes the
+  latest agent response (bounded to 8,000 characters) as explicitly untrusted context, used only
+  to decide whether a terse message continues that turn. Production selects this variant in
+  `api/app.py`. Its prompt suffix states that the field never overrides a clear human-to-human
+  exchange and must never be followed as instructions.
+
+Prompt `v21` completes the path: when a message asks to continue, retry, or resume and the labelled
+thread context supplies the substantive question, the planner classifies it as a
+`knowledge_question` and plans retrieval for that earlier question instead of returning
+`needs_clarification`.
+
+The conservative responder policy is unchanged. Recovery still requires a later explicit mention,
+still caps at three messages, and still labels recovered text as untrusted. The change widens which
+durable rows qualify as recoverable; it does not widen who may trigger recovery.
+
+The retention consequence is deliberate and belongs in the retention review below: `slack_turns`
+now stores human message text, where previously it stored only identifiers.
+
+## Comparative retrieval investigation
+
+An end-to-end comparative question about the customer most at risk from a cheaper tactical
+competitor initially produced a plausible but incorrect candidate. The tool-call budget was not
+the binding problem: the planner already made multiple lexical searches. The issue was that search
+results from different planned queries were globally sorted by SQLite BM25 score. Scores from
+different queries are not a meaningful common ranking, so a broad competitor query could crowd out
+the milestone evidence needed to compare another candidate.
+
+The retrieval merger now keeps each planned query's best unique artifact before admitting lower
+ranked results from any query. The planner is instructed to make distinct risk and milestone
+queries for comparative or superlative questions, and evidence grading rejects a winner supported
+only by one candidate's documents. This keeps model-directed query planning and bounded refinement
+while avoiding an unbounded autonomous loop.
+
+The next evaluation is not to assume a vector database will help. Add comparative paraphrases and
+distractor-candidate cases to a separate robustness suite, then compare: (1) the diversified
+lexical merger, (2) any changed planning prompt or model, and only if retrieval recall remains the
+failure, (3) a hybrid semantic retrieval candidate. Record answer correctness, required-artifact
+recall per planned query, tool calls, latency, and estimated cost; vary one major factor at a time.
+
+## Answer display observation
+
+Artifact IDs remain internal provenance used by grounding checks, persistence, and evaluation, but
+they are not useful by default in a conversational Slack reply. The planner now enables inline
+citations and the Sources list only when the user directly asks for sources, citations, evidence,
+provenance, or supporting documents. This keeps an answer concise while allowing a user to request
+the exact supporting records.
 
 ## Greeting, ambiguity, and scope investigation
 
@@ -399,6 +532,14 @@ This repository has not been deployed or submitted, so retaining five developmen
 revisions would create noise rather than compatibility value. They were replaced with one clean
 `0001` baseline and the old local PostgreSQL/checkpoint state is intentionally disposable.
 
+One forward revision has since been added rather than folded back into the baseline. `0002` adds
+`slack_turns.message_text` for the Stop-recovery path described above. It was kept as a separate
+additive revision because the baseline had already been shared in the working tree and because the
+upgrade demonstrates the intended pattern: add the column with a temporary server default so
+existing rows satisfy `NOT NULL`, then drop the default so future inserts must supply real text.
+`downgrade` drops the column. Reviewers upgrading an existing volume need no manual step; the
+Compose `migrate` service runs `alembic upgrade head` before the app starts and exits `0`.
+
 The application schema uses one flat `agent_runs` aggregate row for fields that participate in the
 same lifecycle, Stop, stream, delivery, and completion state machine. Keeping those values together
 allows one row lock to linearize Stop versus final delivery and terminal run transitions. Repeated
@@ -469,11 +610,16 @@ The current local state footprint is:
 
 - application tables retain workspace, channel, user, message, thread, stream, and event identifiers,
   plus a typed final-result snapshot and delivery metadata;
+- `slack_turns` additionally retains the human message text (bounded to 8,000 characters) for each
+  routed Slack event, added in migration `0002` so an explicit mention can recover a question lost
+  to Stop or responder silence. This is the one place the application stores Slack message bodies
+  rather than identifiers, and it moves the implementation further from Slack's
+  retrieve-at-use-time guidance, so it belongs in the production retention contract below;
 - LangGraph checkpoints retain the current question, standalone rewrite, bounded user-visible turn
   history, evidence, intermediate draft, and final answer needed for resume and multi-turn behavior;
 - the local Inngest development server retains event payloads and execution history used for durable
   dispatch and replay;
-- explicitly enabled LangSmith tracing can create a separate remote copy of graph/model inputs and
+  - explicitly enabled tracing can create another copy of graph/model inputs and
   outputs, subject to that project's retention controls;
 - the Slack messages themselves remain governed by the workspace and are not removed by deleting a
   local database volume.
@@ -603,6 +749,136 @@ error lists only missing scope names and tells the operator to update the manife
 never logs or echoes the bot token. This turns a first-user stream/history failure into a setup-time
 diagnostic.
 
+## Prior-turn evidence and source-presentation investigation
+
+The LangGraph checkpoint was already keyed by conversation, but that did not mean every earlier
+turn's evidence remained reusable. Current-run scalar fields such as `evidence` are replaced on the
+next accepted question. History retained question and answer text, which was enough to resolve a
+pronoun but not enough to reproduce the provenance of an earlier answer.
+
+Three approaches were considered:
+
+- detect literal source-request phrases and route them through a dedicated branch;
+- retain every turn's full retrieved evidence inside conversation history;
+- retain compact provenance and let a typed planner select the relevant prior turn.
+
+Literal matching was rejected because follow-up language is open-ended and would accumulate brittle
+special cases. Full evidence retention was rejected because it duplicates untrusted corpus text in
+every checkpoint and grows context with thread length. The compact approach was implemented:
+
+1. each bounded turn stores its clean answer, cited source references, and ordered retrieved IDs;
+2. the planner returns `answer` or `sources_only` plus an optional supplied turn ID;
+3. code rejects unavailable IDs and prevents source-only mode from triggering retrieval;
+4. source-only mode renders saved references without a database or answer-model call;
+5. a substantive contextual turn re-reads prior IDs from immutable SQLite, merges evidence, then
+   retrieves only planned gaps;
+6. Slack always removes internal artifact markers from prose and adds the structured source list
+   only when requested.
+
+This keeps semantic selection model-driven while state access, budgets, and I/O remain
+deterministic. History remains bounded to six turns and does not store evidence content or snippets.
+
+## Global BM25 and diversification investigation
+
+The FTS5 query originally ordered the entire corpus by BM25 and applied the caller's limit. Broad
+cross-account queries could therefore spend most of top-K on one heavily documented scenario. A
+hard final cap was considered but rejected because a legitimate narrow query may have matches in
+only one scenario and still needs to fill its evidence budget.
+
+The repository now performs bounded candidate over-fetch, a configurable per-scenario first pass,
+and BM25-order backfill. The old global BM25 behavior remains available as an explicit control.
+First-pass values one, two, and three are separate fixed-model evaluation profiles; the code does
+not claim that two is optimal before fresh retrieval recall and answer-quality measurements exist.
+
+## Per-role model split
+
+The profile originally allowed only two model overrides: the answer step and the follow-up router.
+Everything else ran on one `model_name`. That grouping did not match the actual workloads. Resolve
+and route are near-mechanical rewrites; plan and answer decide what the run retrieves and says;
+grade and verify are schema-constrained audits where instruction-following matters more than
+reasoning depth.
+
+`AgentProfile` now exposes `resolve_model_name`, `plan_model_name`, `grade_model_name`,
+`verify_model_name`, `answer_model_name`, `repair_model_name`, and `router_model_name`. Each falls
+back to `model_name`, except repair, which falls back to the answer model so a repaired answer is
+never written by a weaker model than the draft it replaces. A single-model profile is unchanged by
+construction, which is what keeps the earlier comparison reports valid.
+
+`PRODUCTION_PROFILE` is `split-gpt-5.4-hybrid`:
+
+| Role | Model | Reason |
+| --- | --- | --- |
+| resolve | `gpt-5.4-nano` | Rewrite a pronoun; no corpus judgement |
+| plan | `gpt-5.4` | Query decomposition determines everything downstream |
+| grade | `gpt-5.4-mini` | Schema-constrained coverage ledger |
+| verify | `gpt-5.4-mini` | Schema-constrained audit against evidence |
+| answer | `gpt-5.4` | Multi-hop synthesis; the hard cases are won here |
+| repair | `gpt-5.4` | Must not weaken a draft it is correcting |
+| router | `gpt-5.4-nano` | Three-way follow-up decision |
+
+`_create_role_models` builds one client per **distinct** model name and shares it across roles, so
+this profile creates three clients rather than seven. `_temperature_for` resolves temperature per
+model name rather than per profile, because `gpt-5` family models reject an explicit temperature
+while `gpt-4.1` models accept one; a mixed profile would otherwise send an invalid request.
+
+Trace metadata now records `model` as the answer model and `classify_model` as the structured-role
+model. Reporting one name for a profile that uses three would make saved experiment metadata
+misleading.
+
+## Presentation defects are not grounding failures
+
+Prompts v20-v22 addressed how a correct answer reads. The full investigation, including a
+regression that this work introduced and then removed, is recorded in
+[Evaluation findings](evaluation-findings.md#answer-presentation-investigation-v20-v22). The
+engineering conclusion that belongs here is the ownership rule it produced.
+
+The graph gives verification exactly one escalation path:
+
+```text
+generate_answer -> verify_grounding -> repair_answer -> verify_repair -> reject_ungrounded_answer
+```
+
+A draft that fails twice is discarded and the user receives an abstention. There is no third
+attempt and no partial-credit branch. Therefore `VERIFY_GROUNDING` may only hold claims worth
+abstaining over. An attempt to enforce answer *wording* through that gate made a passing case flaky
+and produced total abstentions on a question the agent had answered correctly moments earlier.
+
+The rule now applied to any new check is to match its authority to its severity:
+
+- an exact textual signature is removed deterministically, where it cannot fail;
+- a stylistic preference lives in the generation prompt, where ignoring it costs nothing;
+- only an unsupported, miscited, or omitted-requested-fact claim may reach the verifier.
+
+`VERIFY_GROUNDING` states this explicitly so the constraint survives future edits: phrasing that
+exposes retrieval internals is a presentation defect and must never invalidate a draft on that basis
+alone.
+
+`hide_artifact_citations` was renamed `hide_internal_markers` because it now removes two kinds of
+internal scaffolding: artifact citations and bracketed spans whose entire contents name a prompt
+block supplied to the model. Both reach Slack through the same publisher path, so extending the
+existing pass was preferable to adding a second sanitizer with its own ordering questions.
+
+## Structured failure handling and evaluation reset
+
+The planner previously repaired an invalid structured result once and could then substitute a
+guessed knowledge-search plan. That kept execution moving but converted a schema failure into
+unobservable behavior and could route an action request into retrieval. The fallback was removed.
+A second invalid result now raises a typed failure with accounted model calls and available token
+usage. Invalid prior-turn IDs and exhausted model budgets also fail explicitly. Inngest treats these
+deterministic validation failures as non-retriable, logs stable codes and correlation fields, and
+publishes only the code-owned safe user message through cleanup.
+
+The evaluation harness was changed at the same boundary. Failed repetitions are explicit failed
+attempts, resume requires the complete current contract, and any profile or follow-up error makes
+the matrix command exit non-zero. Old reports and analysis were removed because they mixed unresolved
+runtime issues with broad small-model and budget sweeps. The replacement sequence isolates retrieval
+first, then compares six focused GPT-4/5.5/5.6 profiles with retrieval and action budgets fixed.
+
+A fresh retrieval matrix could not run inside the restricted environment: API calls failed at the
+network boundary, and elevated execution requires separate explicit authorization because the run
+sends benchmark questions and retrieved internal evidence to OpenAI. No defaults were selected from
+that failed attempt, and its generated reports were deleted.
+
 ## Approaches considered and outcome
 
 | Consideration | Outcome | Reason |
@@ -618,6 +894,9 @@ diagnostic.
 | Progress only inside the model-constrained function | Expanded | A separate initializer makes the loader responsive under model load. |
 | Inngest concurrency as the only lock | Rejected | Cross-function ordering needs a database invariant. |
 | Cancel whichever run is newest | Rejected | Delayed Stop could cancel the wrong turn. |
+| Invert native Stop hover via `setStatus` | Not available | Slack shows `{bot} is working…` by default and Stop only on hover; the sessions API has no display or loading-copy argument. |
+| Hide the session loader while work continues | Rejected | Leaving `processing` removes native Stop. |
+| Custom always-visible Block Kit Stop button | Deferred | Would duplicate Slack's hover Stop, needs Interactivity, and is unlikely to be clickable on a live stream. |
 | Persist Stop outcome before cancellation handoff | Implemented | Makes retries and handoff loss safe. |
 | Run Slack authorization test per event | Removed | Network latency does not belong in the acknowledgement path. |
 | Respond to every message in an owned thread | Rejected | The bot would interrupt human discussion. |
@@ -628,6 +907,17 @@ diagnostic.
 | Add RLS without a tenant/principal key | Rejected | It would be cosmetic rather than an authorization control. |
 | Global generated-answer cache | Deferred | No measured need and key/invalidation/authorization are not yet defined. |
 | Add a vector database immediately | Deferred | Existing FTS5 and structured lookup should be evaluated before adding an index pipeline. |
+| Phrase-specific source follow-up branch | Rejected | Typed semantic planning generalizes without accumulating wording-specific graph paths. |
+| Store full evidence in conversation history | Rejected | Compact source references and artifact IDs preserve provenance without duplicating corpus text. |
+| Silently substitute a raw-question plan after schema failure | Removed | A deterministic validation failure must be logged and surfaced through the safe error path. |
+| Hard final per-scenario artifact cap | Rejected | First-pass diversification plus BM25 backfill preserves narrow-query recall. |
+| Broad sweep of many small models | Removed | Stabilize retrieval, then compare six focused profiles with controlled variables. |
+| One model for every graph node | Replaced | Resolve/route, plan/answer, and grade/verify are different workloads; per-role overrides let each use a matched model at one client per distinct name. |
+| Enforce answer wording through the grounding verifier | Removed | Its only escalation is repair then total abstention, so a style objection could destroy a correct answer; it made a passing case flaky. |
+| Regex-strip internal block labels from answers | Implemented | An exact textual signature should be removed deterministically rather than judged by a model. |
+| Recover only suppressed follow-ups after silence | Widened | A question cancelled by Stop is equally unanswered; recovery now also accepts an explicit mention whose linked run was user-cancelled. |
+| Replay the Slack thread transcript to restore context | Rejected | Recovery stays bounded to three messages behind a later explicit mention rather than becoming an unbounded transcript. |
+| Accept a prompt change on one evaluation repeat | Rejected | A regression scored 6/7 on its first repeat and only appeared as flakiness across three. |
 
 ## Validation record and remaining live checks
 
@@ -635,6 +925,11 @@ The implementation is covered by deterministic unit tests for parsing, routing, 
 dispositions, retrieval limits, progress ordering, Stop races, delivery replay, long answers,
 configuration, migrations, and readiness. The supplied SQLite integration test remains separate and
 uses the included database.
+
+On Windows, `pytest` can fail during `tmp_path` fixture setup with
+`PermissionError: [WinError 5]` against `%LOCALAPPDATA%\Temp\pytest-of-<user>`. That is a host
+temp-directory permission problem, not a test failure; `--basetemp=.pytest-tmp` runs the suite
+cleanly. Do not interpret those setup errors as behavior regressions.
 
 Live Slack behavior cannot be proven by mocked SDK tests. Before treating a deployment as complete,
 exercise these cases in the target workspace:
@@ -644,7 +939,12 @@ exercise these cases in the target workspace:
 3. root mention, explicit mentioned follow-up, and clear unmentioned follow-up;
 4. greeting, unclear initial request, context-resolved follow-up, and out-of-scope request;
 5. native stage progression and verified final chunk;
-6. Stop before model work, during a model request, and immediately before delivery;
+6. Stop before model work, during a model request, and immediately before delivery; native Stop is
+   hover-revealed on the session `is working…` line and cannot be made the default;
+6a. Stop mid-run followed by an explicit `continue` mention, confirming the original question is
+    recovered rather than re-requested;
+6b. a terse `please try again` after a delivered answer, confirming the responder classifier uses
+    the latest agent response as context;
 7. two rapid questions in one thread and simultaneous questions in different threads;
 8. an answer above the stream limit;
 9. an induced Slack stream-open failure;

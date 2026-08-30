@@ -6,15 +6,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import AnyHttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-APPLICATION_VERSION = "0.1.0"
-PROMPT_VERSION = "v1"
-# v3 adds recall-safe structured filters to v2's cumulative, deduplicated refinement evidence.
-RETRIEVAL_VERSION = "v3"
-LANGSMITH_PROJECT_NAME = "slack-qa-agent"
+from knowledge_assistant.integrations.slack.routing import SlackRoutingPolicy
 
+APPLICATION_VERSION = "0.1.0"
+PROMPT_VERSION = "v22"
+# v12 uses the structured planner for semantic ranking intent and preserves every bounded
+# comparison-refinement query while keeping the existing hard tool-call limit authoritative.
+RETRIEVAL_VERSION = "v12"
 SETTINGS_CONFIG = SettingsConfigDict(
     env_file=".env",
     env_file_encoding="utf-8",
@@ -57,6 +58,9 @@ class AgentRuntimeSettings(DatabaseSettings):
 
     openai_api_key: SecretStr
     knowledge_db_path: Path = Path("data/synthetic_startup.sqlite")
+    langfuse_base_url: AnyHttpUrl = AnyHttpUrl("http://langfuse-web:3000")
+    langfuse_public_key: SecretStr | None = None
+    langfuse_secret_key: SecretStr | None = None
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -70,50 +74,27 @@ class AgentRuntimeSettings(DatabaseSettings):
             raise ValueError("OPENAI_API_KEY must not be blank")
         return value
 
+    @model_validator(mode="after")
+    def validate_langfuse_credentials(self) -> AgentRuntimeSettings:
+        public_key = (
+            self.langfuse_public_key.get_secret_value().strip()
+            if self.langfuse_public_key is not None
+            else ""
+        )
+        secret_key = (
+            self.langfuse_secret_key.get_secret_value().strip()
+            if self.langfuse_secret_key is not None
+            else ""
+        )
+        if bool(public_key) is not bool(secret_key):
+            raise ValueError(
+                "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must be configured together"
+            )
+        return self
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
-
-
-class LangSmithSettings(BaseSettings):
-    """Credentials required for dataset-only LangSmith operations."""
-
-    model_config = SETTINGS_CONFIG
-
-    langsmith_api_key: SecretStr
-
-    @field_validator("langsmith_api_key", mode="after")
-    @classmethod
-    def reject_blank_langsmith_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError("LANGSMITH_API_KEY must not be blank")
-        return value
-
-
-class AugmentationSettings(LangSmithSettings):
-    """Credentials required to generate and store evaluation candidates."""
-
-    openai_api_key: SecretStr
-
-    @field_validator("openai_api_key", mode="after")
-    @classmethod
-    def reject_blank_openai_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError("OPENAI_API_KEY must not be blank")
-        return value
-
-
-class EvaluationSettings(AgentRuntimeSettings):
-    """Strict settings for LangSmith-backed evaluation commands."""
-
-    langsmith_api_key: SecretStr
-
-    @field_validator("langsmith_api_key", mode="after")
-    @classmethod
-    def reject_blank_langsmith_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError("LANGSMITH_API_KEY must not be blank")
-        return value
 
 
 class SlackApplicationSettings(AgentRuntimeSettings):
@@ -121,14 +102,10 @@ class SlackApplicationSettings(AgentRuntimeSettings):
 
     slack_bot_token: SecretStr
     slack_signing_secret: SecretStr
-    slack_routing_policy: Literal["explicit_mentions_only", "agent_owned_thread_follow_ups"] = (
-        "agent_owned_thread_follow_ups"
-    )
+    slack_routing_policy: SlackRoutingPolicy = SlackRoutingPolicy.AGENT_OWNED_THREAD_FOLLOW_UPS
     inngest_dev: bool = True
     inngest_event_key: SecretStr | None = None
     inngest_signing_key: SecretStr | None = None
-    langsmith_tracing: bool = False
-    langsmith_api_key: SecretStr | None = None
 
     @field_validator("slack_bot_token", "slack_signing_secret", mode="after")
     @classmethod
@@ -139,10 +116,6 @@ class SlackApplicationSettings(AgentRuntimeSettings):
 
     @model_validator(mode="after")
     def validate_integration_contract(self) -> SlackApplicationSettings:
-        if self.langsmith_tracing and (
-            self.langsmith_api_key is None or not self.langsmith_api_key.get_secret_value().strip()
-        ):
-            raise ValueError("LANGSMITH_API_KEY is required when LANGSMITH_TRACING is true")
         if self.app_env == "production":
             if self.inngest_dev:
                 raise ValueError("INNGEST_DEV must be false in production")

@@ -11,7 +11,13 @@
 __pycache__
 *.pyc
 data/*
-!data/README.md
 !data/synthetic_startup.sqlite
 evals/reports
+src/knowledge_assistant/evals/
+docs/
+AGENTS.md
+Makefile
+compose.yaml
+slack-app-manifest*.yaml
+deploy/
 DESIGN.md

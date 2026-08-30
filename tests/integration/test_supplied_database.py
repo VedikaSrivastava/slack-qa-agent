@@ -17,25 +17,32 @@ def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
     hits = repository.search(
         SearchKnowledgeInput(query="Verdant Bay approved live patch window", limit=5)
     )
-    accounts = repository.lookup_accounts(
-        AccountLookupInput(region="North America West", product="Event Nexus")
-    )
-    canada_accounts = repository.lookup_accounts(
+    accounts_result = repository.lookup_accounts(
         AccountLookupInput(
+            purpose="enumerate_cohort",
+            region="North America West",
+            product="Event Nexus",
+        )
+    )
+    canada_accounts_result = repository.lookup_accounts(
+        AccountLookupInput(
+            purpose="filter_matches",
             country="Canada",
             product="Orchestrator",
             pain_point_terms=["approval workflow failures"],
         )
     )
-    model_planned_canada_accounts = repository.lookup_accounts(
+    model_planned_canada_result = repository.lookup_accounts(
         AccountLookupInput(
+            purpose="filter_matches",
             region="North America",
             country="Canada",
             pain_point_terms=["approval-bypass"],
         )
     )
-    live_model_planned_canada_accounts = repository.lookup_accounts(
+    live_model_planned_canada_result = repository.lookup_accounts(
         AccountLookupInput(
+            purpose="filter_matches",
             region="North America",
             country="Canada",
             pain_point_terms=["approval bypass", "failure pattern"],
@@ -47,8 +54,9 @@ def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
     assert schema.fts_table == "artifacts_fts"
     assert schema.fts_id_column == "artifact_id"
     assert hits[0].artifact_id == "art_fff67d92fe41"
-    assert len(accounts) == 12
-    assert {item.artifact_id for item in accounts} == {
+    assert accounts_result.matched_account_count == 12
+    assert accounts_result.is_truncated is False
+    assert {item.artifact_id for item in accounts_result.evidence} == {
         "art_90991e25335f",
         "art_8b0063fbb3cb",
         "art_10f7e8b72e09",
@@ -62,7 +70,7 @@ def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
         "art_3ba29fe1e026",
         "art_f64972a66eeb",
     }
-    assert {item.artifact_id for item in canada_accounts} == {
+    assert {item.artifact_id for item in canada_accounts_result.evidence} == {
         "art_f4a8c516b934",
         "art_cbfb5f92862c",
         "art_6be1b68b59cb",
@@ -71,9 +79,9 @@ def test_supplied_database_schema_and_verdant_bay_retrieval() -> None:
         "art_981952a71434",
         "art_b86a0ca2ce1e",
     }
-    assert {item.artifact_id for item in model_planned_canada_accounts} == {
-        item.artifact_id for item in canada_accounts
+    assert {item.artifact_id for item in model_planned_canada_result.evidence} == {
+        item.artifact_id for item in canada_accounts_result.evidence
     }
-    assert {item.artifact_id for item in live_model_planned_canada_accounts} == {
-        item.artifact_id for item in canada_accounts
+    assert {item.artifact_id for item in live_model_planned_canada_result.evidence} == {
+        item.artifact_id for item in canada_accounts_result.evidence
     }

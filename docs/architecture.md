@@ -155,9 +155,22 @@ cross-system at-least-once window. Final-answer idempotency is a separate ledger
 The primary UX uses `chat.startStream` in plan mode and `chat.appendStream` task updates. Graph node
 boundaries map to fixed, code-owned labels: understanding, searching, reviewing, drafting,
 verifying, and tightening. No model scratchpad, retrieved text, or unverified answer tokens are sent
-as progress. After grounding verification, the complete answer and sources are supplied to
-`chat.stopStream` as the canonical first part. Responses over the 12,000-character stream limit are
-split at readable boundaries and posted as deterministic, ordered continuation messages.
+as progress. After grounding verification, the complete answer—and sources when requested—is
+supplied to `chat.stopStream` as the canonical first part. Responses over the 12,000-character
+stream limit are split at readable boundaries and posted as deterministic, ordered continuation
+messages.
+
+Artifact citations remain internal provenance and are persisted for evaluation and delivery safety.
+Slack hides citation markers and the source list by default; the retrieval planner enables them only
+when the user directly asks for sources, citations, evidence, provenance, or supporting documents.
+
+Each newly reached stage becomes the one active task; the preceding task is completed under its
+stable ID, so Slack can keep completed work visible while presenting the latest work first. The plan
+title follows the current stage rather than repeating Slack's session-level "is working" loader.
+On completion, the last active task is marked complete under its original label, a visible
+`Answer ready` task is added, and the plan title becomes `Answered in …`, using the
+stream's persisted start timestamp. Exact plan animation and completed-task ordering remain Slack
+client behavior.
 
 Native streaming and Agent Sessions are the supported Slack surface. The initial task is the neutral
 `Understanding the request`; search/review labels appear only after the graph actually takes those
@@ -173,7 +186,11 @@ before the publisher uses a deterministic immutable final post; a later match, f
 result is retried rather than guessed. It does not rewrite the finalized message through
 `chat.update`.
 
-Agent Sessions supply Slack's native processing loader and Stop control. A verified
+Agent Sessions supply Slack's native processing loader and Stop control. The processing row is
+Slack client chrome: the default copy is `{bot display name} is working…`, and native Stop is
+revealed on hover of that row. `agents.sessions.setStatus` has no display, hover, or loading-copy
+argument, so the app leaves that loader as Slack draws it rather than emulating Stop with a second
+control. A verified
 `agent_session_stopped` event atomically records an event-to-run claim before sending the Inngest
 cancellation event. Final delivery claim and Stop lock the same run as their linearization point:
 cancellation prevents delivery if it commits first, while a `delivering` run rejects a late Stop and
@@ -226,6 +243,84 @@ context budget. The graph also has an explicit recursion limit, so no path can b
 agent loop. Clarification responses carry a typed disposition through persistence and leave the
 Slack Agent Session `suspended`; other completed outcomes leave it `active`.
 
+### Semantic planning, deterministic execution
+
+The model decides semantic intent through one structured `RetrievalPlan`. For a knowledge question
+it returns a typed `response_mode`, retrieval queries or account filters, and optionally a
+`reuse_turn_id` selected from the bounded prior turns supplied by the application. This is semantic
+selection, not authorization: code rejects an unknown turn ID, prevents a source-only response from
+triggering retrieval, and enforces every action budget.
+
+| response mode | intended use | deterministic execution |
+| --- | --- | --- |
+| `answer` | A new or contextual knowledge answer | Re-read selected prior artifact IDs, then execute only the planned gap retrieval |
+| `sources_only` | Provenance for an earlier answer | Render the selected turn's saved source references with no retrieval or answer-generation call |
+
+This avoids phrase-specific routing such as checking for a literal "show sources" string. New
+wordings remain a model classification problem, while state access and side effects remain typed,
+bounded code. Adding a genuinely new response behavior requires one reviewed schema value and one
+deterministic execution path rather than another collection of regex branches.
+
+### Conversation state and provenance ownership
+
+`conversation_id` is the LangGraph `thread_id`, so one Slack root thread owns one checkpointed
+conversation and separate threads remain isolated. Current-run fields such as `evidence`, queries,
+drafts, and counters are reset for every accepted question. The bounded `history` list survives and
+stores one compact record per turn:
+
+- stable run ID and original question;
+- clean displayed answer, with internal artifact citation markers removed;
+- compact source references for artifacts actually cited by that answer;
+- ordered IDs for the artifacts retrieved by the turn.
+
+History does not duplicate full artifact content or snippets. With the production limits it retains
+at most six turns and at most sixteen artifact IDs per turn. A source request can therefore render
+saved provenance without I/O. A substantive contextual follow-up deterministically re-reads known
+IDs from immutable SQLite, merges them with current evidence, and searches only for material gaps.
+Re-reading preserves current database truth and avoids treating checkpointed model text as evidence.
+
+### Action budgets
+
+The production profile permits at most eight retrieval tool calls per question. The longest
+ordinary path is bounded as follows:
+
+| retrieval round | maximum calls |
+| --- | ---: |
+| Initial: account lookup, three lexical searches, one artifact batch read | 5 |
+| Refinement: two lexical searches, one artifact batch read | 3 |
+| Total | 8 |
+
+A prior-evidence read counts against the same ceiling. The executor reduces new search fan-out when
+reuse consumes a call; it never hides a ninth tool action inside an existing call. The model-call
+ceiling is nine, covering the longest legal history-resolution path, one structured-plan repair,
+two evidence grades, answer generation, grounding verification, one answer repair, and
+re-verification. These ceilings bound failure and cost; retrieval shape and model selection are
+evaluated separately rather than silently increasing the limits.
+
+### Failure behavior
+
+Malformed structured output is re-requested once within the model budget. A second invalid result,
+an unavailable prior-turn ID, or an exhausted model budget raises a typed terminal failure. Inngest
+marks deterministic validation failures non-retriable, records a stable error code and correlation
+identifiers, and lets cleanup publish the code-owned safe Slack message. Logs do not include raw
+provider errors, prompts, evidence, secrets, or user-visible stack traces.
+
+### Retrieval coverage and scaling properties
+
+FTS5 still computes BM25 globally. When diversification is enabled, the repository over-fetches a
+bounded candidate set, takes a profile-controlled number per scenario on the first pass, and then
+backfills in original BM25 order. Backfill preserves recall for narrow single-scenario questions;
+the first pass prevents a heavily documented scenario from immediately occupying every result.
+Global BM25 and first-pass values of one, two, and three are separate fixed-model evaluation
+profiles, so the production value can be selected from retrieval recall and answer quality rather
+than intuition.
+
+Runtime growth is bounded by profile values, not by thread length or corpus density: history,
+queries, candidates, artifact reads, context characters, retrieval rounds, tool calls, model calls,
+and graph recursion all have explicit ceilings. Scaling beyond the current single-corpus design
+would require authorization filters and an indexed corpus strategy, but it does not require a new
+follow-up graph for every wording or source request.
+
 ## Data ownership
 
 - The supplied SQLite database is immutable knowledge input. It is opened with SQLite URI
@@ -237,7 +332,7 @@ Slack Agent Session `suspended`; other completed outcomes leave it `active`.
   not a relational query surface.
 - LangGraph's supported Postgres checkpointer owns its own checkpoint tables.
 - Inngest owns durable function state and retry scheduling.
-- LangSmith is optional observability and experiment infrastructure, not runtime source of truth.
+- Local Langfuse tracing is optional observability, not runtime or evaluation source of truth.
 
 The current single-workspace product treats the supplied SQLite database as one corpus visible to
 eligible non-guest workspace members in channels containing the bot. Slack does not permit workspace
@@ -282,4 +377,4 @@ tested RLS policies.
 - PostgreSQL retains run status, model/tool/retrieval action counts, latency, model/version metadata,
   and sources.
 - The Inngest UI exposes durable steps and retries.
-- LangSmith tracing can be enabled explicitly for model and graph traces.
+- Langfuse tracing can be enabled explicitly for local model and graph traces.

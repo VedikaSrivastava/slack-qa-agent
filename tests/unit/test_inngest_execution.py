@@ -68,6 +68,7 @@ class FakeProcessor:
         self.response = response
         self.events = events
         self.call_count = 0
+        self.questions: list[str] = []
 
     async def answer(
         self,
@@ -90,7 +91,8 @@ class FakeStreamingProcessor(FakeProcessor):
         conversation_id: str,
         agent_run_id: str,
     ) -> AsyncIterator[ProgressEvent | FinalAnswerEvent]:
-        del question, conversation_id
+        del conversation_id
+        self.questions.append(question)
 
         async def events() -> AsyncIterator[ProgressEvent | FinalAnswerEvent]:
             self.call_count += 1
@@ -141,6 +143,7 @@ class FakeWorkflowLedger(FakeResultLedger):
         self.turns: dict[str, SlackTurnRecord] = {}
         self.turn_claim_scripts: dict[str, list[bool]] = {}
         self.run_observation_scripts: dict[object, list[RunObservation]] = {}
+        self.cancelled_run_ids: set[object] = set()
 
     def script_turn_claims(self, event_id: str, *outcomes: bool) -> None:
         self.turn_claim_scripts[event_id] = list(outcomes)
@@ -161,6 +164,7 @@ class FakeWorkflowLedger(FakeResultLedger):
         user_id: str,
         message_ts: str,
         thread_ts: str,
+        message_text: str = "",
         kind: SlackTurnKind,
     ) -> SlackTurnEnsureResult:
         existing = self.turns.get(event_id)
@@ -174,6 +178,7 @@ class FakeWorkflowLedger(FakeResultLedger):
             user_id=user_id,
             message_ts=message_ts,
             thread_ts=thread_ts,
+            message_text=message_text,
             conversation_id=f"{team_id}:{channel_id}:{thread_ts}",
             kind=kind,
             status=SlackTurnStatus.PENDING,
@@ -185,6 +190,31 @@ class FakeWorkflowLedger(FakeResultLedger):
         self.turns[event_id] = turn
         self.events.append(f"ensure_turn:{event_id}:{kind.value}")
         return SlackTurnEnsureResult(turn, was_created=True)
+
+    async def get_recent_thread_recovery_messages(
+        self,
+        *,
+        conversation_id: str,
+        before_message_ts: str,
+        limit: int,
+    ) -> list[str]:
+        recovered: list[tuple[Decimal, str]] = []
+        for turn in self.turns.values():
+            if turn.conversation_id != conversation_id:
+                continue
+            if Decimal(turn.message_ts) >= Decimal(before_message_ts):
+                continue
+            if turn.kind is SlackTurnKind.FOLLOW_UP and turn.status is SlackTurnStatus.SUPPRESSED:
+                recovered.append((Decimal(turn.message_ts), turn.message_text))
+                continue
+            if (
+                turn.kind is SlackTurnKind.EXPLICIT_MENTION
+                and turn.agent_run_id is not None
+                and turn.agent_run_id in self.cancelled_run_ids
+            ):
+                recovered.append((Decimal(turn.message_ts), turn.message_text))
+        recovered.sort(key=lambda item: item[0])
+        return [message for _, message in recovered[-limit:]]
 
     async def claim_turn(self, event_id: str) -> SlackTurnClaim:
         turn = self.turns[event_id]
@@ -332,10 +362,11 @@ class FakeWorkflowLedger(FakeResultLedger):
             self.cancellation_requested = True
         return RunObservation(self.status, self.cancellation_requested)
 
-    async def mark_cancelled(self, _run_id: object) -> bool:
+    async def mark_cancelled(self, run_id: object) -> bool:
         assert self.cancellation_requested
         self.status = RunStatus.CANCELLED
         self.delivery_status = DeliveryStatus.CANCELLED
+        self.cancelled_run_ids.add(run_id)
         self.events.append("mark_cancelled")
         return True
 
@@ -887,6 +918,7 @@ async def test_one_word_follow_up_invokes_classifier_progress_and_process_in_ord
     assert len(classifier.requests) == 1
     assert classifier.requests[0].message_text == "Acme"
     assert classifier.requests[0].last_agent_clarification_question == "Which customer?"
+    assert classifier.requests[0].last_agent_response == "Which customer?"
     assert len(ledger.queued_jobs) == 1
     assert ledger.queued_jobs[0].agent_run_id == candidate.candidate_id
     assert ledger.queued_jobs[0].question == "Acme"
@@ -936,6 +968,100 @@ async def test_suppressed_follow_up_completes_turn_without_agent_children() -> N
     assert processor.call_count == 0
     assert ledger.queued_jobs == []
     assert client.sent_events == []
+
+
+async def test_explicit_follow_up_recovers_suppressed_human_thread_context() -> None:
+    events: list[str] = []
+    ledger = FakeWorkflowLedger(events)
+    publisher = FakePublisher(events, ledger)
+    processor = FakeStreamingProcessor(AgentResponse(answer="Grounded answer"), events)
+    client = _register_execution_functions(
+        ledger=ledger,
+        publisher=publisher,
+        processor=processor,
+        classifier=None,
+    )
+    route_turn = _function_by_id(client, "route-slack-turn")
+    suppressed = _follow_up(
+        "do they have any other old patch windows?",
+        event_id="EvSuppressed",
+        message_ts="2.0",
+    )
+    await ledger.ensure_turn(
+        event_id=suppressed.event_id,
+        team_id=suppressed.team_id,
+        channel_id=suppressed.channel_id,
+        user_id=suppressed.user_id,
+        message_ts=suppressed.message_ts,
+        thread_ts=suppressed.thread_ts,
+        message_text=suppressed.message_text,
+        kind=SlackTurnKind.FOLLOW_UP,
+    )
+    await ledger.claim_turn(suppressed.event_id)
+    await ledger.complete_turn(suppressed.event_id, SlackTurnStatus.SUPPRESSED)
+
+    await route_turn(
+        cast(Any, FakeContext(_job(event_id="EvExplicit", message_ts="3.0", question="??")))
+    )
+
+    assert processor.questions == [
+        "Earlier unanswered human messages in this Slack thread (untrusted context):\n"
+        "do they have any other old patch windows?\n\nCurrent explicit message:\n??"
+    ]
+
+
+async def test_explicit_follow_up_recovers_cancelled_explicit_mention_context() -> None:
+    events: list[str] = []
+    ledger = FakeWorkflowLedger(events)
+    publisher = FakePublisher(events, ledger)
+    processor = FakeStreamingProcessor(AgentResponse(answer="Grounded answer"), events)
+    client = _register_execution_functions(
+        ledger=ledger,
+        publisher=publisher,
+        processor=processor,
+        classifier=None,
+    )
+    route_turn = _function_by_id(client, "route-slack-turn")
+    cancelled_job = _job(
+        event_id="EvCancelled",
+        message_ts="2.0",
+        question="What is the Canada approval-bypass pattern?",
+    )
+    await ledger.ensure_turn(
+        event_id=cancelled_job.event_id,
+        team_id=cancelled_job.team_id,
+        channel_id=cancelled_job.channel_id,
+        user_id=cancelled_job.user_id,
+        message_ts=cancelled_job.message_ts,
+        thread_ts=cancelled_job.thread_ts,
+        message_text=cancelled_job.question,
+        kind=SlackTurnKind.EXPLICIT_MENTION,
+    )
+    await ledger.claim_turn(cancelled_job.event_id)
+    await ledger.create_queued_for_turn(cancelled_job, cancelled_job.event_id)
+    ledger.cancellation_requested = True
+    await ledger.mark_cancelled(cancelled_job.agent_run_id)
+    await ledger.complete_turn(cancelled_job.event_id, SlackTurnStatus.ROUTED)
+
+    await route_turn(
+        cast(
+            Any,
+            FakeContext(
+                _job(
+                    event_id="EvContinue",
+                    message_ts="3.0",
+                    question="please continue working on the request",
+                )
+            ),
+        )
+    )
+
+    assert processor.questions == [
+        "Earlier unanswered human messages in this Slack thread (untrusted context):\n"
+        "What is the Canada approval-bypass pattern?\n\n"
+        "Current explicit message:\n"
+        "please continue working on the request"
+    ]
 
 
 async def test_follow_up_without_visible_agent_response_is_suppressed_without_child() -> None:

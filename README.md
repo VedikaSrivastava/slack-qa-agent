@@ -1,12 +1,13 @@
 # QA Agent
 
-A Slack Q&A bot backed by the included read-only SQLite knowledge base. Docker Compose is the recommended reviewer path.
+A Slack Q&A bot backed by the included read-only SQLite knowledge base. It supports grounded
+multi-turn answers, optional source display, and bounded retrieval.
 
 ## Prerequisites
 
 - Git
 - Docker with Compose v2
-- an OpenAI API key with access to `gpt-4.1-mini`
+- an OpenAI API key
 - a Slack workspace where you can create an app and use the Agent feature
 - [ngrok](https://ngrok.com/download) and a free ngrok account
 
@@ -19,20 +20,12 @@ Use [`slack-app-manifest.yaml`](slack-app-manifest.yaml) as the bootstrap manife
 1. Open [Slack's app dashboard](https://api.slack.com/apps) and select **Create New App**.
 2. Select **From an app manifest**, choose the workspace, select **YAML**, and paste the file.
 3. Create the app, open **OAuth & Permissions**, and select **Install to Workspace**.
-4. Copy the **Bot User OAuth Token** (`xoxb-...`).
-5. Open **Basic Information > App Credentials** and copy the **Signing Secret**.
+4. From **Your app credentials** Copy the **Bot User OAuth Token** (`xoxb-...`).
+5. Open **App Settings > Basic Information > App Credentials** and copy the **Signing Secret**.
 
-The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 5. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
+The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 6. Slack may show Agent View suggestions for `message.im` and `app_home_opened`; they are expected, because this integration supports invited channel mentions rather than direct messages. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
 
 ## 2. Create `.env.local`
-
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env.local
-```
-
-macOS or Linux:
 
 ```bash
 cp .env.example .env.local
@@ -45,15 +38,12 @@ OPENAI_API_KEY=...
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_SIGNING_SECRET=...
 
-# Default: clear unmentioned follow-ups in an agent-owned thread may be handled.
-SLACK_ROUTING_POLICY=agent_owned_thread_follow_ups
-
-# Optional; LangSmith is not required for local use.
-LANGSMITH_TRACING=false
-LANGSMITH_API_KEY=
+# Optional stricter override; omit it to allow clear follow-ups in agent-owned threads.
+# SLACK_ROUTING_POLICY=explicit_mentions_only
 ```
 
-Set `SLACK_ROUTING_POLICY=explicit_mentions_only` to require `@QA Agent` on every turn.
+The code-reviewed default is `agent_owned_thread_follow_ups`. Set the optional override to
+`explicit_mentions_only` to require `@QA Agent` on every turn.
 
 ## 3. Start the stack
 
@@ -62,7 +52,6 @@ If an earlier local checkout created the disposable PostgreSQL volume, reset it 
 ```bash
 docker compose --env-file .env.local down --volumes
 ```
-
 Build and start:
 
 ```bash
@@ -93,7 +82,36 @@ Follow logs with:
 docker compose --env-file .env.local logs --follow app slack-ingress migrate inngest postgres
 ```
 
-## 4. Start the HTTPS tunnel
+## 4. Optional: enable Langfuse tracing
+
+Langfuse tracing is optional. The QA agent runs normally without it. To inspect local traces, start
+the self-hosted observability profile:
+
+```bash
+docker compose --env-file .env.local --profile observability up -d --build
+```
+
+Open <http://localhost:3000>, create a local Langfuse organisation and project, and add its public
+and secret keys to `.env.local`:
+
+```dotenv
+LANGFUSE_BASE_URL=http://langfuse-web:3000
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+```
+
+Recreate the app container so it receives the new environment values:
+
+```bash
+docker compose --env-file .env.local up -d --force-recreate app
+```
+
+Langfuse records the LangGraph/LangChain execution tree, including model calls, retrieval steps,
+latency, token usage, and configured run metadata. Local evaluation reports remain independent of
+tracing and are written to `evals/reports/`; the offline evaluation harness deliberately disables
+Langfuse even if its keys are present in `.env.local`.
+
+## 5. Start the HTTPS tunnel
 
 Configure ngrok (only once) if needed:
 
@@ -110,20 +128,9 @@ ngrok http 8001
 Copy the HTTPS forwarding origin. Port `8001` exposes only `POST /slack/events`; do not tunnel port
 `8000`. If the ngrok URL changes, regenerate and reapply the manifest in the next step.
 
-## 5. Generate and apply the final manifest
+## 6. Generate and apply the final manifest
 
 Keep Compose and ngrok running. Generate the complete manifest with the HTTPS origin from ngrok.
-
-Windows PowerShell:
-
-```powershell
-$publicBaseUrl = "https://<public-tunnel-host>"
-$generatedManifest = docker compose --env-file .env.local exec -T app `
-  python -m knowledge_assistant.integrations.slack.manifest $publicBaseUrl
-$generatedManifest | Set-Clipboard
-```
-
-macOS or Linux:
 
 ```bash
 public_base_url="https://<public-tunnel-host>"
@@ -136,12 +143,12 @@ Then:
 
 1. Open **App Manifest** in the Slack app dashboard and select **YAML**.
 2. Replace the bootstrap manifest with the generated output and save it.
-3. Wait for Slack to verify `https://<public-tunnel-host>/slack/events`.
-4. Confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and
+3. In Slack's `request_url` warning, select **Click here to verify** for `https://<public-tunnel-host>/slack/events`; once verification succeeds, Slack has applied the saved manifest changes.
+4. Got to Event Subscriptions and confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and
    `message.groups`.
 5. Complete any reinstall or reauthorization prompt.
 
-## 6. Invite and test QA Agent
+## 7. Invite and test QA Agent
 
 Invite the app in each public or private channel where it should answer:
 
@@ -149,13 +156,20 @@ Invite the app in each public or private channel where it should answer:
 /invite @QA Agent
 ```
 
-Ask a question:
+and then ask a question:
 
 ```text
 @QA Agent For Verdant Bay, what is the approved live patch window?
 ```
 
-See the [thread/session contract](docs/thread-and-session-model.md) for interaction behavior.
+Replies in the same Slack thread continue the same agent conversation. Mention QA Agent again for
+an explicit follow-up; clear unmentioned follow-ups are handled conservatively.
+
+While the agent is working, Slack shows the current step on the streaming plan and a separate
+session line (`QA Agent Dev is working…`). Hover that session line to reveal native **Stop**. The
+app cannot invert that hover or change the loading copy; Slack owns that chrome. The investigation
+and alternatives that were not taken are in
+[the implementation journal](docs/implementation-journal.md#native-stop-hover-is-slack-client-chrome).
 
 ## Troubleshooting
 
@@ -187,6 +201,8 @@ If progress or Stop is missing:
 
 - confirm the Slack Agent feature is enabled and the app has `assistant:write`;
 - confirm `agent_session_stopped` is subscribed;
+- hover the session line `QA Agent Dev is working…` — Slack shows native Stop only on hover, and
+  the app cannot make that control the default;
 - inspect logs for `slack_stream_open_failed`; a stream-open failure still permits one final answer.
 
 ## Run checks
@@ -207,6 +223,77 @@ Or use Docker:
 docker build --target validation .
 ```
 
+Run the official deterministic benchmark directly with `uv`. It uses an in-process checkpointer and
+does not require Docker, Slack credentials, Langfuse, PostgreSQL, or a hosted evaluation service:
+
+```bash
+uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
+  --repeats 3 --env-file .env.local --output-dir evals/reports/submission-final-v22
+```
+
+Use at least three repeats before accepting a change. A single repeat cannot separate a real
+improvement from live-model variance, and it has already hidden one regression in this repository.
+
+Add a `run` when you need the generated answer text rather than metrics; the `matrix` report stores
+metrics only. `run` refuses to overwrite an existing path, so reruns need a new filename:
+
+```bash
+uv run python -m knowledge_assistant.evals run --suite full \
+  --profile split-gpt-5.4-hybrid --env-file .env.local \
+  --output evals/reports/submission-final-v22/answers.json
+```
+
+This live command sends the seven questions, retrieved evidence, and generated answers to OpenAI.
+Run it only with authorization for that transfer. Offline evaluation deliberately disables
+Langfuse. Exit code zero means the run completed and wrote a valid report; it does not mean every
+answer or deterministic gate passed.
+
+Current production-model split for this build:
+
+- responder/router: `gpt-5.4-nano`
+- resolve_question: `gpt-5.4-nano`
+- retrieval planning: `gpt-5.4`
+- evidence grading: `gpt-5.4-mini`
+- answer generation: `gpt-5.4`
+- grounding verification: `gpt-5.4-mini`
+- repair: `gpt-5.4`
+
+Latest matrix run (`split-gpt-5.4-hybrid`, prompt `v22`, three repeats, 21 case-runs) is 6/7
+strict-contract pass on every repeat, 1.0 operations contract, 0 errors, no budget violations, and
+no flaky cases. The single persistent failure is `official-blueharbor-defection-risk`, which fails
+`exact_dates` when it answers and `answerability_behavior` on the two case-runs where it abstains.
+Full metrics and the prompt-version history are in [Evaluation strategy](docs/evaluations.md).
+
+### Optional semantic evaluation: authorization required
+
+A judge run additionally sends generated answers and reference answers to the judge model.
+No authorized judge run has been executed for `split-gpt-5.4-hybrid` yet; use the command below for
+historical candidate diagnostics:
+
+```bash
+uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
+  --profiles split-gpt-5.4-hybrid --judge-model gpt-5 \
+  --env-file .env.local --confirm-data-transfer
+``` 
+
+Judge output is a candidate-defined diagnostic, not an assignment pass threshold. Future judge
+protocol-v5 reports record the explicit transfer acknowledgement and combine semantic answer
+quality with the strict deterministic contract in `task_quality_passed`. The default take-home
+evidence is the official deterministic run plus manual review. Derived and multi-turn suites are
+candidate-authored regression checks, not held-out proof. See
+[Evaluation strategy](docs/evaluations.md) for the complete policy and production evaluation plan.
+
+Every `evals/reports/candidate-*` directory lacks documented authorization metadata and is
+unaccepted. Preserve these artifacts only for audit; do not quote their rates or use them as
+submission evidence.
+
+When dependencies change, regenerate the lockfile at the repository root:
+
+```bash
+uv lock
+uv sync --frozen --all-groups
+```
+
 ## Stop or reset
 
 ```bash
@@ -216,11 +303,3 @@ docker compose --env-file .env.local down
 # Remove the stack and local PostgreSQL data.
 docker compose --env-file .env.local down --volumes
 ```
-
-## Documentation
-
-- [Architecture and request lifecycle](docs/architecture.md)
-- [Slack thread and Agent Session model](docs/thread-and-session-model.md)
-- [Engineering decisions and tradeoffs](docs/decisions-and-tradeoffs.md)
-- [Implementation journal](docs/implementation-journal.md)
-- [Evaluations and LangSmith](docs/evaluations.md)

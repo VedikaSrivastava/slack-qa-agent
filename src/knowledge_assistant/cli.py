@@ -23,7 +23,7 @@ async def ask(question: str, conversation_id: str | None = None) -> int:
             agent_run_id=run_id,
         )
     print(response.answer)
-    if response.sources:
+    if response.show_sources and response.sources:
         print("\nSources")
         for source in response.sources:
             print(f"- {source.title} ({source.artifact_id})")

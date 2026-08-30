@@ -11,8 +11,9 @@ dependencies = [
   "fastapi>=0.141,<1",
   "httpx>=0.28,<1",
   "inngest>=0.5.19,<1",
+  "langchain>=1,<2",
   "langchain-openai>=1,<2",
-  "langsmith>=0.11,<1",
+  "langfuse>=4,<5",
   "langgraph>=1.2,<2",
   "langgraph-checkpoint-postgres>=3,<4",
   "psycopg[binary,pool]>=3.2,<4",
@@ -39,6 +40,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/knowledge_assistant"]
+# Offline evaluation stays source-only; the production wheel contains runtime application code.
+exclude = ["src/knowledge_assistant/evals"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --strict-config"

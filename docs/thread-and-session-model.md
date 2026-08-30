@@ -72,9 +72,11 @@ message such as "When does it renew?" into a standalone question using the recen
 The resolver does not answer the question.
 
 Every finalized outcome is a turn, including a greeting, clarification request, scope response, or
-grounded answer. The history stores only the user message, final user-visible answer, and run ID;
-it does not store private reasoning. A new root Slack thread gets a different checkpoint identity
-even if its text and participants are identical.
+grounded answer. History stores the user message, clean user-visible answer, run ID, compact cited
+source references, and ordered retrieved artifact IDs. It does not store private reasoning, full
+evidence content, or snippets. The planner may select a supplied prior turn for source display or
+contextual reuse; code validates that selection. A new root Slack thread gets a different
+checkpoint identity even if its text and participants are identical.
 
 This bound controls what is reused as model context; it is not a retention or erasure boundary.
 PostgreSQL checkpoint revisions and the other durable Slack-derived records remain until the local
@@ -133,7 +135,8 @@ forever.
 ## Stop targeting
 
 Slack emits `agent_session_stopped` for a thread-scoped session, but application cancellation must
-target an individual run. The handler therefore does not simply cancel the newest database row.
+target an individual run. The native Stop control is drawn by Slack on the session processing row
+and is hover-revealed in the desktop client; application code cannot invert that presentation. The handler therefore does not simply cancel the newest database row.
 It validates the workspace/channel/root thread, compares reported streaming message timestamps
 when present, uses event/message time as a causal upper bound when necessary, and atomically stores
 the selected run and accepted/rejected result under the Stop event ID.
@@ -164,3 +167,37 @@ Direct-message and multiparty-DM events are not
 subscribed, so the Agent app container is not an alternate supported ingress in this take-home.
 Adding it would require explicit `message.im`/`message.mpim` behavior, scopes, authorization rules,
 and tests rather than silently treating it as equivalent to a shared channel.
+
+## Explicit follow-up recovery
+
+Unmentioned human thread replies are conservatively classified before the agent answers. When a
+reply is suppressed as ambiguous, its bounded text remains in the durable turn ledger. If a later
+thread reply explicitly mentions QA Agent, the processor receives up to three earlier unanswered
+human messages as labelled, untrusted context. This lets a short clarification such as `??` refer
+back to the immediately preceding unanswered question without exposing an unbounded channel
+transcript. The current explicit message remains authoritative, and users should include the full
+question whenever practical.
+
+Recovery covers two ways a question can go unanswered, because both leave the user looking at a
+thread with no reply:
+
+- an ordinary follow-up the responder classified as ambiguous, whose turn ended `suppressed`;
+- an explicit mention whose linked run was **cancelled** by the user's Stop before an answer was
+  delivered.
+
+The second case matters because cancellation ends a run without writing a LangGraph conversation
+turn, so the question is absent from history even though its turn completed normally as `routed`.
+Recovery selects it by joining `agent_runs` and accepting a cancelled run with
+`cancellation_requested` set. Without this, `@QA Agent please continue` after a Stop asked the user
+what request to continue.
+
+Recovery reads `slack_turns.message_text`, added in migration `0002`. Selection is bounded to three
+messages strictly older than the current one, ordered by Slack timestamp.
+
+A related gap sits in the responder rather than in recovery. A terse reply such as `please try
+again` after a *delivered* answer has no referent on its own. Production runs the classifier under
+`ResponderPromptVariant.LATEST_AGENT_CONTEXT`, which supplies the latest agent response, bounded to
+8,000 characters, purely as context for judging whether a terse message continues the agent's own
+turn. It is labelled untrusted, is never followed as instructions, and does not override a clear
+human-to-human exchange, an acknowledgement, a logistics note, or a request aimed at another
+person.

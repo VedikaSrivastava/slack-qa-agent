@@ -26,6 +26,13 @@ class ResponderDecision(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+class ResponderPromptVariant(StrEnum):
+    """Code-reviewed responder prompt variants used in offline routing experiments."""
+
+    CURRENT = "current"
+    LATEST_AGENT_CONTEXT = "latest_agent_context"
+
+
 class RoutingReason(StrEnum):
     POLICY_REQUIRES_MENTION = "policy_requires_mention"
     NOT_THREAD_REPLY = "not_thread_reply"
@@ -55,6 +62,11 @@ class ResponderClassificationRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     message_text: str = Field(min_length=1, max_length=8_000)
     last_agent_clarification_question: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=8_000,
+    )
+    last_agent_response: str | None = Field(
         default=None,
         min_length=1,
         max_length=8_000,

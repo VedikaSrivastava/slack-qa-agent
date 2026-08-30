@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 import uuid
 from contextlib import suppress
 from enum import StrEnum
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
+from knowledge_assistant.agent.citations import hide_internal_markers
 from knowledge_assistant.agent.models import AgentResponse, ProgressEvent, ProgressStage
 from knowledge_assistant.persistence.models import (
     DeliveryStatus,
@@ -37,10 +39,13 @@ STREAM_OPEN_WAIT_SECONDS = 25.0
 STREAM_OPEN_POLL_SECONDS = 0.25
 MESSAGE_RECONCILE_ATTEMPTS = 3
 MESSAGE_RECONCILE_POLL_SECONDS = 0.25
-_ANSWER_HEADER = "**Answer**\n\n"
 _SOURCES_HEADER = "\n\n**Sources**\n\n"
-_CONTINUATION_HEADER = "**Answer (continued)**\n\n"
-_WORK_TASK_SUFFIX = "grounded-answer"
+_CONTINUATION_HEADER = "**Continued**\n\n"
+_INITIAL_TASK_KEY = "understanding"
+_INITIAL_TASK_TITLE = "Understanding the request"
+_ANSWER_READY_TASK_KEY = "answer-ready"
+_ANSWER_READY_TITLE = "Answer ready"
+_TERMINAL_TASK_KEY = "terminal"
 _DELIVERY_METADATA_EVENT_TYPE = "grounded_qa_delivery"
 _SAFE_ERROR_TEXT = "I couldn't complete that request right now. Please try again shortly."
 _CANCELLED_TEXT = "Stopped at your request."
@@ -65,6 +70,17 @@ _PROGRESS_TITLES = {
     ProgressStage.VERIFYING: "Verifying claims and sources",
     ProgressStage.TIGHTENING: "Tightening the final response",
 }
+_PROGRESS_TITLES_BY_SEQUENCE = {
+    10: _PROGRESS_TITLES[ProgressStage.THINKING],
+    20: _PROGRESS_TITLES[ProgressStage.SEARCHING],
+    30: _PROGRESS_TITLES[ProgressStage.REVIEWING],
+    40: _PROGRESS_TITLES[ProgressStage.SEARCHING],
+    50: _PROGRESS_TITLES[ProgressStage.REVIEWING],
+    60: _PROGRESS_TITLES[ProgressStage.DRAFTING],
+    70: _PROGRESS_TITLES[ProgressStage.VERIFYING],
+    80: _PROGRESS_TITLES[ProgressStage.TIGHTENING],
+    90: _PROGRESS_TITLES[ProgressStage.VERIFYING],
+}
 
 
 class PreparedDelivery(BaseModel):
@@ -75,6 +91,12 @@ class PreparedDelivery(BaseModel):
     version: int = Field(default=DELIVERY_MANIFEST_VERSION, ge=1)
     parts: tuple[str, ...] = Field(min_length=1, max_length=100)
     content_hashes: tuple[str, ...] = Field(min_length=1, max_length=100)
+    completion_title: str = Field(default="Answer ready", min_length=1, max_length=256)
+    completion_task_key: str = Field(
+        default=_INITIAL_TASK_KEY,
+        min_length=1,
+        max_length=128,
+    )
     session_status: Literal["active", "suspended"] = "active"
 
     @model_validator(mode="after")
@@ -215,13 +237,18 @@ def _split_text(text: str, limit: int) -> list[str]:
 
 
 def _format_answer_parts(response: AgentResponse) -> tuple[str, ...]:
-    escaped_answer = _escape_slack_text(response.answer)
+    # Artifact markers and prompt-block labels are internal scaffolding. Slack renders the
+    # structured source list only when requested, avoiding duplicate IDs in prose and sources.
+    display_answer = hide_internal_markers(response.answer)
+    escaped_answer = _escape_slack_text(display_answer)
     source_lines = [
         f"- {_escape_source_label(source.title)} (`{_safe_inline_code(source.artifact_id)}`)"
         for source in response.sources
     ]
-    sources_section = _SOURCES_HEADER + "\n".join(source_lines) if source_lines else ""
-    full_text = _ANSWER_HEADER + escaped_answer + sources_section
+    sources_section = (
+        _SOURCES_HEADER + "\n".join(source_lines) if response.show_sources and source_lines else ""
+    )
+    full_text = escaped_answer + sources_section
     if len(full_text) <= MAX_STREAM_MARKDOWN:
         return (full_text,)
 
@@ -255,8 +282,25 @@ def _markdown_blocks(text: str) -> list[dict[str, str]]:
     return [{"type": "markdown", "text": text}]
 
 
-def _work_task_id(run_id: uuid.UUID) -> str:
-    return f"{run_id}:{_WORK_TASK_SUFFIX}"
+def _work_task_id(run_id: uuid.UUID, task_key: str) -> str:
+    return f"{run_id}:{task_key}"
+
+
+def _progress_task_key(sequence: int) -> str:
+    return f"stage-{sequence}"
+
+
+def _progress_title_for_sequence(sequence: int) -> str:
+    return _PROGRESS_TITLES_BY_SEQUENCE.get(sequence, "Completed step")
+
+
+def _title_for_task_key(task_key: str) -> str:
+    if task_key == _INITIAL_TASK_KEY:
+        return _INITIAL_TASK_TITLE
+    for sequence in _PROGRESS_TITLES_BY_SEQUENCE:
+        if task_key == _progress_task_key(sequence):
+            return _progress_title_for_sequence(sequence)
+    return "Completed step"
 
 
 def _task_update(
@@ -264,15 +308,59 @@ def _task_update(
     *,
     title: str,
     status: str,
+    task_key: str,
     hide_title: bool = False,
 ) -> dict[str, object]:
     return {
         "type": "task_update",
-        "id": _work_task_id(run_id),
+        "id": _work_task_id(run_id, task_key),
         "title": title,
         "hide_title": hide_title,
         "status": status,
     }
+
+
+def _completion_plan_title(stream_ts: str | None) -> str:
+    """Create one replay-safe elapsed-time label for the completed stream."""
+
+    if stream_ts is None:
+        return "Answer ready"
+    try:
+        elapsed_seconds = max(0, int(time.time() - float(stream_ts)))
+    except ValueError:
+        return "Answer ready"
+    if elapsed_seconds < 60:
+        return f"Answered in {elapsed_seconds}s"
+    minutes, seconds = divmod(elapsed_seconds, 60)
+    return f"Answered in {minutes}m {seconds}s"
+
+
+def _answer_completion_chunks(
+    run_id: uuid.UUID,
+    *,
+    text: str,
+    completion_title: str,
+    completion_task_key: str,
+) -> list[dict[str, object]]:
+    # Slack still draws a plan row when hide_title is true, so a hidden "Answer ready"
+    # task appears as a blank bullet. Complete the last real stage in place, then add a
+    # visible terminal step instead of replacing or hiding that label.
+    return [
+        _task_update(
+            run_id,
+            title=_title_for_task_key(completion_task_key),
+            status="complete",
+            task_key=completion_task_key,
+        ),
+        _task_update(
+            run_id,
+            title=_ANSWER_READY_TITLE,
+            status="complete",
+            task_key=_ANSWER_READY_TASK_KEY,
+        ),
+        {"type": "plan_update", "title": completion_title},
+        {"type": "markdown_text", "text": text},
+    ]
 
 
 def _manifest_part(manifest: DeliveryManifest, part_number: int) -> tuple[str, str | None]:
@@ -397,11 +485,12 @@ class SlackPublisher:
                 recipient_user_id=delivery.user_id,
                 task_display_mode="plan",
                 chunks=[
-                    {"type": "plan_update", "title": "Working on your request"},
+                    {"type": "plan_update", "title": _INITIAL_TASK_TITLE},
                     _task_update(
                         run_id,
-                        title="Understanding the request",
+                        title=_INITIAL_TASK_TITLE,
                         status="in_progress",
+                        task_key=_INITIAL_TASK_KEY,
                     ),
                 ],
             )
@@ -480,19 +569,47 @@ class SlackPublisher:
             return False
 
         title = _PROGRESS_TITLES[event.stage]
+        previous_sequence = delivery.last_progress_sequence
+        current_task_key = _progress_task_key(event.sequence)
+        chunks: list[dict[str, object]] = []
+        if previous_sequence == 0:
+            chunks.append(
+                _task_update(
+                    run_id,
+                    title=_INITIAL_TASK_TITLE,
+                    status="complete",
+                    task_key=_INITIAL_TASK_KEY,
+                )
+            )
+        else:
+            chunks.append(
+                _task_update(
+                    run_id,
+                    title=_progress_title_for_sequence(previous_sequence),
+                    status="complete",
+                    task_key=_progress_task_key(previous_sequence),
+                )
+            )
+        chunks.append(
+            _task_update(
+                run_id,
+                title=title,
+                status="in_progress",
+                task_key=current_task_key,
+            )
+        )
+        chunks.append({"type": "plan_update", "title": title})
         try:
             if delivery.stream_ts is None:
                 raise RunTransitionError(f"Open Slack stream has no timestamp: {run_id}")
             await self._client.chat_appendStream(
                 channel=delivery.channel_id,
                 ts=delivery.stream_ts,
-                chunks=[
-                    _task_update(
-                        run_id,
-                        title=title,
-                        status="in_progress",
-                    )
-                ],
+                # Slack shows the active plan task before completed tasks. Each stage gets a
+                # stable ID, so the UI retains a readable history while the newest work stays
+                # at the top. The plan title tracks the current stage so it does not duplicate
+                # Slack's session-level "is working" loader, which also owns the Stop control.
+                chunks=chunks,
             )
         except Exception as exc:
             # Progress is informative and intentionally best-effort. Final delivery remains strict.
@@ -513,9 +630,16 @@ class SlackPublisher:
     ) -> PreparedDelivery:
         parts = _format_answer_parts(response)
         content_hashes = tuple(_content_hash(part) for part in parts)
+        delivery = await self._ledger.get_delivery(run_id)
         prepared = PreparedDelivery(
             parts=parts,
             content_hashes=content_hashes,
+            completion_title=_completion_plan_title(delivery.stream_ts),
+            completion_task_key=(
+                _INITIAL_TASK_KEY
+                if delivery.last_progress_sequence == 0
+                else _progress_task_key(delivery.last_progress_sequence)
+            ),
             session_status="suspended" if response.requires_user_input else "active",
         )
         await self._ledger.install_delivery_manifest(
@@ -566,6 +690,8 @@ class SlackPublisher:
                 run_id,
                 text,
                 content_hash,
+                completion_title=prepared.completion_title,
+                completion_task_key=prepared.completion_task_key,
                 session_status=prepared.session_status,
             )
         return await self._publish_continuation_part(
@@ -779,6 +905,8 @@ class SlackPublisher:
         text: str,
         content_hash: str,
         *,
+        completion_title: str,
+        completion_task_key: str,
         session_status: Literal["active", "suspended"],
     ) -> str:
         delivery = await self._ledger.get_delivery(run_id)
@@ -800,15 +928,12 @@ class SlackPublisher:
                 await self._client.chat_stopStream(
                     channel=delivery.channel_id,
                     ts=delivery.stream_ts,
-                    chunks=[
-                        _task_update(
-                            run_id,
-                            title="Answer ready",
-                            status="complete",
-                            hide_title=True,
-                        ),
-                        {"type": "markdown_text", "text": text},
-                    ],
+                    chunks=_answer_completion_chunks(
+                        run_id,
+                        text=text,
+                        completion_title=completion_title,
+                        completion_task_key=completion_task_key,
+                    ),
                     metadata=metadata,
                     session_status=session_status,
                 )
@@ -838,6 +963,8 @@ class SlackPublisher:
                     run_id,
                     text,
                     content_hash,
+                    completion_title=completion_title,
+                    completion_task_key=completion_task_key,
                     session_status=session_status,
                 )
 
@@ -850,6 +977,8 @@ class SlackPublisher:
                 run_id,
                 text,
                 content_hash,
+                completion_title=completion_title,
+                completion_task_key=completion_task_key,
                 session_status=session_status,
             )
         if delivery.stream_state != SlackStreamState.DEGRADED:
@@ -874,6 +1003,8 @@ class SlackPublisher:
         text: str,
         content_hash: str,
         *,
+        completion_title: str,
+        completion_task_key: str,
         session_status: Literal["active", "suspended"],
     ) -> str:
         """Retry the same canonical stop without rewriting a finalized Slack message."""
@@ -892,15 +1023,12 @@ class SlackPublisher:
             await self._client.chat_stopStream(
                 channel=delivery.channel_id,
                 ts=delivery.stream_ts,
-                chunks=[
-                    _task_update(
-                        run_id,
-                        title="Answer ready",
-                        status="complete",
-                        hide_title=True,
-                    ),
-                    {"type": "markdown_text", "text": text},
-                ],
+                chunks=_answer_completion_chunks(
+                    run_id,
+                    text=text,
+                    completion_title=completion_title,
+                    completion_task_key=completion_task_key,
+                ),
                 metadata=metadata,
                 session_status=session_status,
             )
@@ -1045,7 +1173,7 @@ class SlackPublisher:
                 run_id,
                 title="Work stopped" if is_error else "Work complete",
                 status="error" if is_error else "complete",
-                hide_title=True,
+                task_key=_TERMINAL_TASK_KEY,
             ),
             {"type": "markdown_text", "text": text},
         ]

@@ -85,6 +85,21 @@ an event with no matched run, and cleanup that observes an already-succeeded run
 untouched. Successful finalization owns the outcome-specific status, including `suspended` for a
 clarification, so delayed cleanup cannot overwrite it.
 
+## Native Stop chrome stays Slack-owned
+
+**Decision:** keep `agents.sessions.setStatus` `processing` so Slack can show its native Stop
+control. Do not invert the hover, hide the session loader while work is in flight, or add a second
+Stop button.
+
+**Why:** the processing row is drawn by Slack. The default text is `{bot display name} is working…`;
+Stop appears on hover. The current sessions API does not accept a custom loading message or a
+Stop-first display. Leaving `processing` removes native Stop. A custom Block Kit button would be a
+second control, would require Interactivity, and may not be clickable on a live stream.
+
+**Tradeoff:** testers and users must hover the session working line to find Stop. That is Slack
+client behavior, not a missing event subscription. The investigation and rejected alternatives are
+in the [implementation journal](implementation-journal.md#native-stop-hover-is-slack-client-chrome).
+
 ## Conservative unmentioned follow-ups
 
 **Decision:** an explicit mention establishes an agent-owned thread. Ordinary human replies in that
@@ -100,6 +115,36 @@ same global model-capacity constraint used by question processing.
 **Tradeoff:** the conservative judge can miss a terse ambiguous follow-up. That is preferable to
 responding into human conversation. The classification adds one bounded model call only for an
 ordinary message in an already agent-owned thread; explicit mentions bypass it.
+
+### Classifier cost and noisy threads
+
+The responder judge uses the production profile's router role, currently `gpt-5.4-nano` under
+`split-gpt-5.4-hybrid`. It sends a fixed routing prompt, the new message (at most 8,000 characters),
+an optional latest clarification question, and — under the `LATEST_AGENT_CONTEXT` variant that
+production selects — the latest agent response, also bounded to 8,000 characters. It never sends
+the whole Slack thread. A normal candidate makes one short structured-output call; Inngest may
+retry a failed classifier function at most twice. Explicit mentions cost no classifier call.
+
+The latest agent response was added because a terse `please try again` or `can you redo that` has no
+referent on its own, so the classifier could not distinguish a retry request from unrelated human
+conversation. It is labelled untrusted, is used only to judge whether a terse message continues the
+agent's own turn, and explicitly does not override a clear human-to-human exchange, an
+acknowledgement, a logistics note, or a request directed at another person. It roughly doubles
+classifier input tokens on threads with long prior answers, which is the accepted cost of the
+capability.
+
+Routing is a three-way decision over a short input, so it is deliberately assigned the cheapest
+model in the profile rather than the answer model. Exact per-decision cost depends on message
+length, tokenization, retries, and the configured profile; the provider's model pricing page is the
+source of truth.
+
+Rambling is deliberately not treated as a transcript to keep sending to the model. The classifier
+sees only the candidate message and can remain silent. The answer workflow retains at most six
+finalized semantic turns, while explicit recovery includes no more than three suppressed human
+messages and 4,000 characters. Older discussion falls out of model context rather than increasing
+cost indefinitely. Users should restate the relevant question or start a new thread when context
+has drifted; a future production policy could add an aggregate token cap or a user-confirmed
+summary, but neither should silently replace the current bounded evidence-first behavior.
 
 ## Thread-scoped conversations and sessions
 
@@ -128,6 +173,35 @@ keeps normal knowledge questions at the same model-call count.
 code-owned, do not make knowledge claims, and bypass retrieval/citation checks; only knowledge
 questions enter the grounded answer path. Clarification leaves the Agent Session `suspended` until
 the next user turn.
+
+## Typed response modes with deterministic prior-turn reuse
+
+**Decision:** let the structured planner semantically select `answer` or `sources_only` and an
+optional prior-turn ID, then validate and execute that plan in deterministic code.
+
+**Why:** follow-up language is open-ended, so literal source-request phrases and question-specific
+branches do not scale. The model is useful for deciding which earlier topic the user means. It must
+not be responsible for dereferencing arbitrary IDs, deciding budgets, or inventing unavailable
+history. A typed plan keeps that security and reliability boundary explicit.
+
+**Tradeoff:** planner quality can still select the wrong available turn. The bounded history summary
+therefore exposes stable turn IDs, questions, and provenance availability, while code rejects IDs
+that were not supplied. A new execution behavior must extend the reviewed schema; it cannot appear
+silently from free-form model text.
+
+## Compact per-turn provenance instead of checkpointed evidence copies
+
+**Decision:** retain the clean answer, cited source references, and ordered retrieved artifact IDs
+for each bounded conversation turn. Do not retain full evidence or snippets in turn history.
+
+**Why:** source-only follow-ups need provenance, and contextual follow-ups need a reliable bridge
+back to evidence. IDs provide that bridge without multiplying knowledge-base text across every
+checkpoint. Deterministically re-reading those IDs from immutable SQLite restores trusted evidence
+and permits gap retrieval.
+
+**Tradeoff:** a later source-only request can show only sources actually saved for the selected
+turn. If an artifact disappears in a future mutable corpus, contextual reuse must treat the missing
+read as an evidence gap rather than trusting the historical answer.
 
 ## Inngest for durable background work
 
@@ -237,6 +311,12 @@ development revisions were squashed into one clean baseline instead of preservin
 upgrade history. Future schema changes after a shared release should be additive revisions. Offline
 mode can render the baseline as SQL for review.
 
+Head is now `0002`, which adds `slack_turns.message_text` for Stop recovery. It was written as an
+additive forward revision rather than folded into the baseline, both because the baseline was
+already in the shared working tree and because it demonstrates the intended safe pattern for a
+`NOT NULL` column on a populated table: add with a temporary server default, then drop the default
+so later inserts must supply real text rather than silently accepting an empty string.
+
 **Tradeoff:** revisions are less immediately readable to someone expecting standalone `.sql` files.
 LangGraph checkpoint tables are deliberately excluded because the supported checkpointer owns their
 schema and setup.
@@ -254,10 +334,41 @@ SQL to the model.
 vector database should be introduced only if measured evaluations show that the added indexing,
 deployment, and consistency costs improve the target cases.
 
+### Bounded scenario-first diversification
+
+**Decision:** compare global BM25 with bounded candidate over-fetching and a configurable
+per-scenario first pass, followed by BM25-order backfill.
+
+**Why:** global BM25 can let one heavily documented scenario occupy most of top-K for a broad
+cross-account question. A first pass improves coverage, while backfill prevents a hard per-scenario
+cap from starving a legitimate narrow query.
+
+**Tradeoff:** the first-pass number is not assumed to be universally correct. Global BM25 and
+values one, two, and three are fixed-model retrieval profiles. Retrieval recall, citation recall,
+answer correctness, action counts, latency, and cost must select the default; the official seven
+cases remain immutable and robustness cases remain separate.
+
+### Query-diverse comparison evidence
+
+**Decision:** let the model plan several concise retrieval queries, but merge results round-robin
+by planned query rather than globally sorting BM25 scores from unrelated queries.
+
+**Why:** a comparative question often needs different evidence dimensions, such as competitor risk
+and a promised milestone. SQLite scores are meaningful within a query, not across differently
+worded queries. Preserving each query's strongest unique result makes the final evidence set more
+representative without increasing the configured tool-call budget.
+
+**Tradeoff:** this can retain a weaker result from one query instead of another result from a highly
+productive query. Evidence grading and one bounded refinement remain responsible for identifying
+gaps. A hybrid/vector retrieval change requires a measured robustness-suite recall improvement,
+not this one failure alone.
+
 The original delivery archive and extracted database are retained under `data/` for simple setup
 and clear provenance. SQLite `-wal` and `-shm` runtime sidecars are ignored rather than committed.
 Docker copies only the main database into the validation stage so the supplied-schema integration
-test runs, while the runtime image receives that file through a read-only bind mount.
+test runs, while the runtime image receives that file through a read-only bind mount. The runtime
+wheel excludes `knowledge_assistant.evals`, and the runtime stage does not copy tests, evaluation
+datasets/reports, or the evaluation CLI.
 
 ## Bounded LangGraph instead of an open agent loop
 
@@ -271,6 +382,32 @@ variable.
 **Tradeoff:** unusually broad questions can exhaust the configured budgets and return insufficient
 evidence. Profiles can be compared through experiments before any production budget is changed.
 
+### One model per role rather than one model per profile
+
+**Decision:** allow a profile to set a different model for resolve, plan, grade, verify, answer,
+repair, and router. Production uses `split-gpt-5.4-hybrid`: `gpt-5.4` for plan, answer, and repair;
+`gpt-5.4-mini` for grade and verify; `gpt-5.4-nano` for resolve and router.
+
+**Why:** these nodes are not the same workload. Rewriting a pronoun and making a three-way routing
+decision need instruction-following on a short input. Planning queries and synthesising a grounded
+multi-hop answer decide whether the run succeeds. Grading and verification are schema-constrained
+audits. Paying answer-model rates for a pronoun rewrite buys nothing, and paying nano rates for
+answer synthesis loses the cases that matter.
+
+**Tradeoff:** a profile now names several models, so a result is attributable to a combination
+rather than a single model. Each unset override falls back to `model_name`, so single-model
+profiles and their existing reports remain valid and comparable. Repair falls back to the answer
+model rather than the default so a repair can never be written by a weaker model than the draft it
+corrects. Temperature is resolved per model name because `gpt-5` models reject an explicit
+temperature that `gpt-4.1` models accept. Trace metadata records both `model` (answer) and
+`classify_model` so a saved experiment is not described by one misleading name.
+
+The eight-call retrieval ceiling represents the longest configured two-round path: five initial
+calls and three refinement calls. Reusing prior evidence consumes one of those calls and reduces new
+search fan-out. The nine-call model ceiling covers the longest legal path including one structured
+plan repair and one answer repair. These are honest safety ceilings, not targets the agent is
+encouraged to spend.
+
 ## Evidence-first generation and explicit grounding checks
 
 **Decision:** never generate an answer without retrieved evidence; verify citations after generation
@@ -280,6 +417,27 @@ and after the single repair attempt.
 
 **Tradeoff:** an answer may be rejected even when it sounds plausible, and verification adds model
 latency. This is intentional for a grounded Q&A system.
+
+### Only grounding failures may reach the verifier
+
+**Decision:** the grounding verifier holds unsupported claims, wrong exact values, dropped
+qualifiers, and omitted requested facts. Answer wording and internal-scaffolding leakage are handled
+by deterministic sanitization and generation instructions instead.
+
+**Why:** verification escalates exactly once—`verify` to `repair` to `verify_repair` to
+`reject_ungrounded_answer`—so a draft that fails twice becomes an abstention. A check placed there
+can destroy a correct, well-grounded answer. Enforcing presentation through that gate was tried and
+measurably converted a passing evaluation case into a flaky one that sometimes abstained outright.
+Each concern now sits at the layer whose failure mode matches its severity: an exact textual
+signature is stripped deterministically and cannot fail; a stylistic preference is a generation
+instruction whose worst case is being ignored; only claim-level defects may abstain.
+
+**Tradeoff:** a presentation rule the model ignores produces a slightly worse-worded answer with no
+automatic correction, because nothing forces a retry. That is the intended trade: a correct answer
+that reads imperfectly is strictly better than no answer. Deterministic stripping also cannot catch
+the prose form of a leak—an answer that narrates retrieval mechanics in sentences rather than
+brackets—so the generation instruction remains necessary and the two layers cover different halves
+of the same defect.
 
 ## Docker Compose as the recommended local launcher
 
@@ -299,18 +457,19 @@ an `INNGEST_BASE_URL` value alone is only configuration. The application `/ready
 only the knowledge-file and PostgreSQL probes it actually performs, and the Compose dependency is a
 startup ordering control rather than continuous failover.
 
-## Code-defined versions and optional LangSmith tracing
+## Code-defined versions and optional local Langfuse tracing
 
 **Decision:** keep model names, prompt/retrieval versions, and agent budgets in reviewed code.
-Require LangSmith only for hosted dataset and experiment commands; keep runtime tracing off by
-default.
+Keep runtime tracing optional and local evaluation independent of the tracing backend.
 
-**Why:** a checkout is self-contained without access to a private LangSmith prompt or project.
+**Why:** a checkout is self-contained without access to a private hosted prompt or trace project.
 Traces are useful evidence, but the application must not depend on them to answer Slack questions.
 
-**Tradeoff:** changing a model or prompt requires a code review and deployment. Evaluators without
-LangSmith access can still run the local suite, but they cannot see hosted experiment history unless
-it is shared separately.
+**Tradeoff:** changing a model or prompt requires code review and deployment. Local JSON reports are
+portable, while optional Langfuse traces remain in the developer's configured environment. The
+self-hosted stack also depends on MinIO creating bucket `langfuse` before OTEL ingestion can
+succeed; the compose service does that on startup so a missing bucket does not look like a
+disconnected app.
 
 ## No answer cache without evidence that it helps
 
@@ -333,8 +492,25 @@ tests should determine whether it remains enabled. Results must never cross auth
 ## Current limitations
 
 - Retrieval is intentionally lexical and schema-aware rather than semantic/vector-based.
+- The production FTS first-pass value is still a code-reviewed candidate, not a measured winner;
+  fresh retrieval and robustness matrices remain pending live API/data-transfer authorization.
+- The model semantically selects among supplied prior turns and can choose the wrong available turn.
+  Code prevents fabricated IDs and unsafe execution, but semantic selection quality still requires
+  multi-turn evaluation.
+- Provenance history is intentionally bounded. A source request for an evicted old turn cannot
+  reconstruct sources unless another durable product record explicitly owns them.
 - The official benchmark contains only seven human-curated cases and should not be treated as broad
-  production coverage.
+  production coverage. Three repeats of those seven detect gross instability; they do not establish
+  a production accuracy rate.
+- `official-blueharbor-defection-risk` fails every repeat on the production profile, through
+  `exact_dates` when it answers and `answerability_behavior` when it abstains. Its lexical coverage
+  is far below every other case, which points at retrieval rather than presentation. No prompt
+  revision in the v20-v22 sequence targeted it.
+- Presentation rules in the generation prompt have no enforcement. A model that ignores them
+  produces a worse-worded but still correct and grounded answer; only deterministic sanitization is
+  guaranteed.
+- `slack_turns` now stores human message text, not only identifiers. This is required for Stop
+  recovery but increases the Slack-derived data footprint that the retention work below must cover.
 - Model aliases identify reviewed model families but do not pin provider weights. Saved experiment
   metadata records the exact configured names, and model-dependent results should be rerun before a
   production-profile change.

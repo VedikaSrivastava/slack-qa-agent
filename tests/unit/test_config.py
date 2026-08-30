@@ -3,14 +3,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from knowledge_assistant.config import (
-    LANGSMITH_PROJECT_NAME,
-    AgentRuntimeSettings,
-    AugmentationSettings,
-    EvaluationSettings,
-    LangSmithSettings,
-    SlackApplicationSettings,
-)
+from knowledge_assistant.config import AgentRuntimeSettings, SlackApplicationSettings
+from knowledge_assistant.integrations.slack.routing import SlackRoutingPolicy
 
 
 def test_required_runtime_configuration_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -19,7 +13,6 @@ def test_required_runtime_configuration_fails_fast(monkeypatch: pytest.MonkeyPat
         "SLACK_BOT_TOKEN",
         "SLACK_SIGNING_SECRET",
         "DATABASE_URL",
-        "LANGSMITH_API_KEY",
     ):
         monkeypatch.delenv(variable_name, raising=False)
 
@@ -35,7 +28,6 @@ def test_blank_secret_values_fail_fast() -> None:
             slack_bot_token="",
             slack_signing_secret="",
             database_url="",
-            langsmith_api_key="",
         )
 
 
@@ -47,7 +39,6 @@ def test_database_url_requires_asyncpg_scheme() -> None:
             slack_bot_token="xoxb-test",
             slack_signing_secret="test-signing-secret",
             database_url="postgresql://user:password@postgres/test",
-            langsmith_api_key="test-langsmith-key",
         )
 
 
@@ -61,45 +52,10 @@ def test_production_requires_inngest_credentials() -> None:
             slack_signing_secret="test-signing-secret",
             database_url="postgresql+asyncpg://user:password@postgres/test",
             knowledge_db_path=Path("data/example.sqlite"),
-            langsmith_api_key="test-langsmith-key",
         )
 
 
-def test_experiment_configuration_is_independent_from_slack() -> None:
-    settings = EvaluationSettings(
-        _env_file=None,
-        app_env="test",
-        openai_api_key="test-key",
-        database_url="postgresql+asyncpg://user:password@postgres/test",
-        knowledge_db_path=Path("data/example.sqlite"),
-        langsmith_api_key="test-langsmith-key",
-    )
-
-    assert LANGSMITH_PROJECT_NAME == "slack-qa-agent"
-    assert settings.knowledge_db_path == Path("data/example.sqlite")
-
-
-def test_dataset_sync_configuration_requires_only_langsmith() -> None:
-    settings = LangSmithSettings(
-        _env_file=None,
-        langsmith_api_key="test-langsmith-key",
-    )
-
-    assert settings.langsmith_api_key.get_secret_value() == "test-langsmith-key"
-
-
-def test_augmentation_configuration_does_not_require_databases_or_slack() -> None:
-    settings = AugmentationSettings(
-        _env_file=None,
-        openai_api_key="test-openai-key",
-        langsmith_api_key="test-langsmith-key",
-    )
-
-    assert settings.openai_api_key.get_secret_value() == "test-openai-key"
-    assert settings.langsmith_api_key.get_secret_value() == "test-langsmith-key"
-
-
-def test_agent_runtime_is_independent_from_slack_and_langsmith() -> None:
+def test_agent_runtime_is_independent_from_slack() -> None:
     settings = AgentRuntimeSettings(
         _env_file=None,
         openai_api_key="test-key",
@@ -107,17 +63,25 @@ def test_agent_runtime_is_independent_from_slack_and_langsmith() -> None:
     )
 
     assert settings.openai_api_key.get_secret_value() == "test-key"
+    assert settings.langfuse_public_key is None
+    assert settings.langfuse_secret_key is None
 
 
-def test_slack_tracing_requires_langsmith_key_when_enabled() -> None:
-    with pytest.raises(ValidationError, match="LANGSMITH_API_KEY"):
-        SlackApplicationSettings(
+@pytest.mark.parametrize(
+    ("public_key", "secret_key"),
+    [("lf_pk_test", None), (None, "lf_sk_test"), ("   ", "lf_sk_test")],
+)
+def test_partial_langfuse_configuration_fails_fast(
+    public_key: str | None,
+    secret_key: str | None,
+) -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        AgentRuntimeSettings(
             _env_file=None,
             openai_api_key="test-key",
-            slack_bot_token="xoxb-test",
-            slack_signing_secret="test-signing-secret",
             database_url="postgresql+asyncpg://user:password@postgres/test",
-            langsmith_tracing=True,
+            langfuse_public_key=public_key,
+            langfuse_secret_key=secret_key,
         )
 
 
@@ -132,11 +96,22 @@ def test_invalid_log_level_fails_instead_of_defaulting() -> None:
 
 
 def test_knowledge_database_path_has_a_repository_local_default() -> None:
-    settings = EvaluationSettings(
+    settings = AgentRuntimeSettings(
         _env_file=None,
         openai_api_key="test-key",
         database_url="postgresql+asyncpg://user:password@localhost/test",
-        langsmith_api_key="test-langsmith-key",
     )
 
     assert settings.knowledge_db_path == Path("data/synthetic_startup.sqlite")
+
+
+def test_slack_routing_policy_defaults_to_agent_owned_follow_ups() -> None:
+    settings = SlackApplicationSettings(
+        _env_file=None,
+        openai_api_key="test-key",
+        slack_bot_token="xoxb-test",
+        slack_signing_secret="test-signing-secret",
+        database_url="postgresql+asyncpg://user:password@localhost/test",
+    )
+
+    assert settings.slack_routing_policy is SlackRoutingPolicy.AGENT_OWNED_THREAD_FOLLOW_UPS

@@ -1,0 +1,23 @@
+{
+  "label": "matrix",
+  "suite": "full",
+  "dataset_digest": "ac16383cd1ad83a28b5a5225e3f15ded8bf983425f6f6baa1e217f0fd456ee1c",
+  "annotation_digest": "9b1bdd0a7434bafd77d83776fc2c2d77cfbc755f0a21f8003d7c40de2e748578",
+  "case_count": 7,
+  "repeats": 1,
+  "follow_up_variants": [],
+  "follow_up_case_count": 0,
+  "follow_up_dataset_digest": null,
+  "follow_up_annotation_digest": null,
+  "application_version": "0.1.0",
+  "evaluation_protocol_version": "v13",
+  "prompt_version": "v19",
+  "retrieval_version": "v12",
+  "git_commit": "24170ce",
+  "git_dirty": true,
+  "python": "3.12.13",
+  "started_at": "2026-08-30T05:44:46.379614+00:00",
+  "profiles": [
+    "split-gpt-5.4-hybrid"
+  ]
+}
