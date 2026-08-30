@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from knowledge_assistant.integrations.slack.routing import SlackRoutingPolicy
 
 APPLICATION_VERSION = "0.1.0"
-PROMPT_VERSION = "v19"
+PROMPT_VERSION = "v22"
 # v12 uses the structured planner for semantic ranking intent and preserves every bounded
 # comparison-refinement query while keeping the existing hard tool-call limit authoritative.
 RETRIEVAL_VERSION = "v12"

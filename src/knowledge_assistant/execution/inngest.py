@@ -794,6 +794,7 @@ def create_question_functions(
                 user_id=candidate.user_id,
                 message_text=candidate.message_text,
                 last_agent_clarification_question=clarification_question,
+                last_agent_response=clarification_answer[:8_000] if clarification_answer else None,
             )
             classification_payload = cast(
                 dict[str, Any],
@@ -843,25 +844,25 @@ def create_question_functions(
             explicit_conversation_id = question.conversation_id
             explicit_message_ts = question.message_ts
 
-            async def load_suppressed_thread_context() -> list[str]:
-                return await ledger.get_recent_suppressed_thread_messages(
+            async def load_thread_recovery_context() -> list[str]:
+                return await ledger.get_recent_thread_recovery_messages(
                     conversation_id=explicit_conversation_id,
                     before_message_ts=explicit_message_ts,
                     limit=3,
                 )
 
-            suppressed_messages = cast(
+            recovery_messages = cast(
                 list[str],
                 await ctx.step.run(
                     "load-suppressed-thread-context",
-                    load_suppressed_thread_context,
+                    load_thread_recovery_context,
                 ),
             )
             question = question.model_copy(
                 update={
                     "question": add_suppressed_thread_context(
                         question.question,
-                        suppressed_messages,
+                        recovery_messages,
                     )
                 }
             )

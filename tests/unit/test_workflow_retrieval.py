@@ -10,7 +10,7 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from pydantic import ValidationError
 
-from knowledge_assistant.agent.citations import citation_issues, hide_artifact_citations
+from knowledge_assistant.agent.citations import citation_issues, hide_internal_markers
 from knowledge_assistant.agent.profiles import PRODUCTION_PROFILE, AgentProfile
 from knowledge_assistant.agent.retrieval_tools import KnowledgeRetrievalTools
 from knowledge_assistant.agent.state import AgentState
@@ -725,7 +725,15 @@ def test_grouped_artifact_citations_are_recognized() -> None:
 def test_hiding_provenance_preserves_ordinary_bracketed_prose() -> None:
     answer = "See [documentation]. Supported comparison [art_a, art_b]."
 
-    assert hide_artifact_citations(answer) == "See [documentation]. Supported comparison."
+    assert hide_internal_markers(answer) == "See [documentation]. Supported comparison."
+
+
+def test_hiding_internal_markers_removes_prompt_block_labels() -> None:
+    answer = "Seven accounts share the pattern [art_a]. Only a matching subset. [ACCOUNT_LOOKUP_COVERAGE]"
+
+    assert (
+        hide_internal_markers(answer) == "Seven accounts share the pattern. Only a matching subset."
+    )
 
 
 def test_unknown_artifact_in_grouped_citations_is_rejected() -> None:

@@ -20,7 +20,7 @@ Use [`slack-app-manifest.yaml`](slack-app-manifest.yaml) as the bootstrap manife
 1. Open [Slack's app dashboard](https://api.slack.com/apps) and select **Create New App**.
 2. Select **From an app manifest**, choose the workspace, select **YAML**, and paste the file.
 3. Create the app, open **OAuth & Permissions**, and select **Install to Workspace**.
-4. Copy the **Bot User OAuth Token** (`xoxb-...`).
+4. From **Your app credentials** Copy the **Bot User OAuth Token** (`xoxb-...`).
 5. Open **App Settings > Basic Information > App Credentials** and copy the **Signing Secret**.
 
 The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 6. Slack may show Agent View suggestions for `message.im` and `app_home_opened`; they are expected, because this integration supports invited channel mentions rather than direct messages. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
@@ -95,6 +95,7 @@ Open <http://localhost:3000>, create a local Langfuse organisation and project, 
 and secret keys to `.env.local`:
 
 ```dotenv
+LANGFUSE_BASE_URL=http://langfuse-web:3000
 LANGFUSE_PUBLIC_KEY=...
 LANGFUSE_SECRET_KEY=...
 ```
@@ -109,12 +110,6 @@ Langfuse records the LangGraph/LangChain execution tree, including model calls, 
 latency, token usage, and configured run metadata. Local evaluation reports remain independent of
 tracing and are written to `evals/reports/`; the offline evaluation harness deliberately disables
 Langfuse even if its keys are present in `.env.local`.
-
-If `LANGFUSE_BASE_URL` points to a hosted Langfuse service, trace payloads leave the application
-environment. They may include user questions, prompt and model/tool inputs, retrieved evidence
-snippets, generated answers, and run metadata. Enable hosted tracing only with explicit approval for
-that data transfer and an accepted access, retention, and deletion policy. Never commit Langfuse
-keys or expose private trace links.
 
 ## 5. Start the HTTPS tunnel
 
@@ -224,9 +219,20 @@ Run the official deterministic benchmark directly with `uv`. It uses an in-proce
 does not require Docker, Slack credentials, Langfuse, PostgreSQL, or a hosted evaluation service:
 
 ```bash
+uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
+  --repeats 3 --env-file .env.local --output-dir evals/reports/submission-final-v22
+```
+
+Use at least three repeats before accepting a change. A single repeat cannot separate a real
+improvement from live-model variance, and it has already hidden one regression in this repository.
+
+Add a `run` when you need the generated answer text rather than metrics; the `matrix` report stores
+metrics only. `run` refuses to overwrite an existing path, so reruns need a new filename:
+
+```bash
 uv run python -m knowledge_assistant.evals run --suite full \
-  --profile balanced-gpt-4.1-mini --env-file .env.local \
-  --output evals/reports/full-balanced-gpt-4.1-mini.json
+  --profile split-gpt-5.4-hybrid --env-file .env.local \
+  --output evals/reports/submission-final-v22/answers.json
 ```
 
 This live command sends the seven questions, retrieved evidence, and generated answers to OpenAI.
@@ -234,26 +240,33 @@ Run it only with authorization for that transfer. Offline evaluation deliberatel
 Langfuse. Exit code zero means the run completed and wrote a valid report; it does not mean every
 answer or deterministic gate passed.
 
-The final recorded deterministic snapshot is
-[`takehome-agent-p19-r12-e13-final-20260829-01.json`](evals/reports/takehome-agent-p19-r12-e13-final-20260829-01.json).
-It uses prompt `v19`, retrieval `v12`, and evaluation protocol `v13`: 6/7 strict-contract cases,
-3/4 applicable exact-content cases, 7/7 evidence and operation contracts, and
-`semantic_quality: not_judged`. Manual assignment-reference review found 5/7 fully complete,
-reference-agreeing answers, so the 7/7 target was not met. See
-[Evaluation findings](docs/evaluation-findings.md) for the case review and metric caveats. Matching
-p19/r12 derived and multi-turn regression runs have not been measured.
+Current production-model split for this build:
+
+- responder/router: `gpt-5.4-nano`
+- resolve_question: `gpt-5.4-nano`
+- retrieval planning: `gpt-5.4`
+- evidence grading: `gpt-5.4-mini`
+- answer generation: `gpt-5.4`
+- grounding verification: `gpt-5.4-mini`
+- repair: `gpt-5.4`
+
+Latest matrix run (`split-gpt-5.4-hybrid`, prompt `v22`, three repeats, 21 case-runs) is 6/7
+strict-contract pass on every repeat, 1.0 operations contract, 0 errors, no budget violations, and
+no flaky cases. The single persistent failure is `official-blueharbor-defection-risk`, which fails
+`exact_dates` when it answers and `answerability_behavior` on the two case-runs where it abstains.
+Full metrics and the prompt-version history are in [Evaluation strategy](docs/evaluations.md).
 
 ### Optional semantic evaluation: authorization required
 
-A judge run additionally sends generated answers and reference answers to the judge model. Run it
-only with explicit authorization for that expanded transfer, and acknowledge the boundary in the
-command:
+A judge run additionally sends generated answers and reference answers to the judge model.
+No authorized judge run has been executed for `split-gpt-5.4-hybrid` yet; use the command below for
+historical candidate diagnostics:
 
 ```bash
 uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
-  --profiles balanced-gpt-4.1-mini --judge-model gpt-5 \
+  --profiles split-gpt-5.4-hybrid --judge-model gpt-5 \
   --env-file .env.local --confirm-data-transfer
-```
+``` 
 
 Judge output is a candidate-defined diagnostic, not an assignment pass threshold. Future judge
 protocol-v5 reports record the explicit transfer acknowledgement and combine semantic answer

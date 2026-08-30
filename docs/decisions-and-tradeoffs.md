@@ -103,17 +103,25 @@ ordinary message in an already agent-owned thread; explicit mentions bypass it.
 
 ### Classifier cost and noisy threads
 
-The current implementation does not use a separate cheaper routing model: the responder judge uses
-the active production profile, currently `gpt-4.1-mini`. It sends a fixed routing prompt, the new
-message (at most 8,000 characters), and only an optional latest clarification question—never the
-whole Slack thread. A normal candidate makes one short structured-output call; Inngest may retry a
-failed classifier function at most twice. Explicit mentions cost no classifier call.
+The responder judge uses the production profile's router role, currently `gpt-5.4-nano` under
+`split-gpt-5.4-hybrid`. It sends a fixed routing prompt, the new message (at most 8,000 characters),
+an optional latest clarification question, and — under the `LATEST_AGENT_CONTEXT` variant that
+production selects — the latest agent response, also bounded to 8,000 characters. It never sends
+the whole Slack thread. A normal candidate makes one short structured-output call; Inngest may
+retry a failed classifier function at most twice. Explicit mentions cost no classifier call.
 
-At the published `gpt-4.1-mini` text rates of $0.40 per million input tokens and $1.60 per million
-output tokens, a representative 500-input-token / 10-output-token routing decision is about
-$0.000216 (roughly 0.02 cents). Actual cost depends on message length, language tokenization,
-retries, and the configured profile; the [OpenAI model page](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
-is the source of truth for current pricing.
+The latest agent response was added because a terse `please try again` or `can you redo that` has no
+referent on its own, so the classifier could not distinguish a retry request from unrelated human
+conversation. It is labelled untrusted, is used only to judge whether a terse message continues the
+agent's own turn, and explicitly does not override a clear human-to-human exchange, an
+acknowledgement, a logistics note, or a request directed at another person. It roughly doubles
+classifier input tokens on threads with long prior answers, which is the accepted cost of the
+capability.
+
+Routing is a three-way decision over a short input, so it is deliberately assigned the cheapest
+model in the profile rather than the answer model. Exact per-decision cost depends on message
+length, tokenization, retries, and the configured profile; the provider's model pricing page is the
+source of truth.
 
 Rambling is deliberately not treated as a transcript to keep sending to the model. The classifier
 sees only the candidate message and can remain silent. The answer workflow retains at most six
@@ -288,6 +296,12 @@ development revisions were squashed into one clean baseline instead of preservin
 upgrade history. Future schema changes after a shared release should be additive revisions. Offline
 mode can render the baseline as SQL for review.
 
+Head is now `0002`, which adds `slack_turns.message_text` for Stop recovery. It was written as an
+additive forward revision rather than folded into the baseline, both because the baseline was
+already in the shared working tree and because it demonstrates the intended safe pattern for a
+`NOT NULL` column on a populated table: add with a temporary server default, then drop the default
+so later inserts must supply real text rather than silently accepting an empty string.
+
 **Tradeoff:** revisions are less immediately readable to someone expecting standalone `.sql` files.
 LangGraph checkpoint tables are deliberately excluded because the supported checkpointer owns their
 schema and setup.
@@ -353,6 +367,26 @@ variable.
 **Tradeoff:** unusually broad questions can exhaust the configured budgets and return insufficient
 evidence. Profiles can be compared through experiments before any production budget is changed.
 
+### One model per role rather than one model per profile
+
+**Decision:** allow a profile to set a different model for resolve, plan, grade, verify, answer,
+repair, and router. Production uses `split-gpt-5.4-hybrid`: `gpt-5.4` for plan, answer, and repair;
+`gpt-5.4-mini` for grade and verify; `gpt-5.4-nano` for resolve and router.
+
+**Why:** these nodes are not the same workload. Rewriting a pronoun and making a three-way routing
+decision need instruction-following on a short input. Planning queries and synthesising a grounded
+multi-hop answer decide whether the run succeeds. Grading and verification are schema-constrained
+audits. Paying answer-model rates for a pronoun rewrite buys nothing, and paying nano rates for
+answer synthesis loses the cases that matter.
+
+**Tradeoff:** a profile now names several models, so a result is attributable to a combination
+rather than a single model. Each unset override falls back to `model_name`, so single-model
+profiles and their existing reports remain valid and comparable. Repair falls back to the answer
+model rather than the default so a repair can never be written by a weaker model than the draft it
+corrects. Temperature is resolved per model name because `gpt-5` models reject an explicit
+temperature that `gpt-4.1` models accept. Trace metadata records both `model` (answer) and
+`classify_model` so a saved experiment is not described by one misleading name.
+
 The eight-call retrieval ceiling represents the longest configured two-round path: five initial
 calls and three refinement calls. Reusing prior evidence consumes one of those calls and reduces new
 search fan-out. The nine-call model ceiling covers the longest legal path including one structured
@@ -368,6 +402,27 @@ and after the single repair attempt.
 
 **Tradeoff:** an answer may be rejected even when it sounds plausible, and verification adds model
 latency. This is intentional for a grounded Q&A system.
+
+### Only grounding failures may reach the verifier
+
+**Decision:** the grounding verifier holds unsupported claims, wrong exact values, dropped
+qualifiers, and omitted requested facts. Answer wording and internal-scaffolding leakage are handled
+by deterministic sanitization and generation instructions instead.
+
+**Why:** verification escalates exactly once—`verify` to `repair` to `verify_repair` to
+`reject_ungrounded_answer`—so a draft that fails twice becomes an abstention. A check placed there
+can destroy a correct, well-grounded answer. Enforcing presentation through that gate was tried and
+measurably converted a passing evaluation case into a flaky one that sometimes abstained outright.
+Each concern now sits at the layer whose failure mode matches its severity: an exact textual
+signature is stripped deterministically and cannot fail; a stylistic preference is a generation
+instruction whose worst case is being ignored; only claim-level defects may abstain.
+
+**Tradeoff:** a presentation rule the model ignores produces a slightly worse-worded answer with no
+automatic correction, because nothing forces a retry. That is the intended trade: a correct answer
+that reads imperfectly is strictly better than no answer. Deterministic stripping also cannot catch
+the prose form of a leak—an answer that narrates retrieval mechanics in sentences rather than
+brackets—so the generation instruction remains necessary and the two layers cover different halves
+of the same defect.
 
 ## Docker Compose as the recommended local launcher
 
@@ -427,7 +482,17 @@ tests should determine whether it remains enabled. Results must never cross auth
 - Provenance history is intentionally bounded. A source request for an evicted old turn cannot
   reconstruct sources unless another durable product record explicitly owns them.
 - The official benchmark contains only seven human-curated cases and should not be treated as broad
-  production coverage.
+  production coverage. Three repeats of those seven detect gross instability; they do not establish
+  a production accuracy rate.
+- `official-blueharbor-defection-risk` fails every repeat on the production profile, through
+  `exact_dates` when it answers and `answerability_behavior` when it abstains. Its lexical coverage
+  is far below every other case, which points at retrieval rather than presentation. No prompt
+  revision in the v20-v22 sequence targeted it.
+- Presentation rules in the generation prompt have no enforcement. A model that ignores them
+  produces a worse-worded but still correct and grounded answer; only deterministic sanitization is
+  guaranteed.
+- `slack_turns` now stores human message text, not only identifiers. This is required for Stop
+  recovery but increases the Slack-derived data footprint that the retention work below must cover.
 - Model aliases identify reviewed model families but do not pin provider weights. Saved experiment
   metadata records the exact configured names, and model-dependent results should be rerun before a
   production-profile change.

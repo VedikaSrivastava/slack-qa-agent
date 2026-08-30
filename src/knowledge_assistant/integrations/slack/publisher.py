@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
-from knowledge_assistant.agent.citations import hide_artifact_citations
+from knowledge_assistant.agent.citations import hide_internal_markers
 from knowledge_assistant.agent.models import AgentResponse, ProgressEvent, ProgressStage
 from knowledge_assistant.persistence.models import (
     DeliveryStatus,
@@ -233,9 +233,9 @@ def _split_text(text: str, limit: int) -> list[str]:
 
 
 def _format_answer_parts(response: AgentResponse) -> tuple[str, ...]:
-    # Artifact markers are an internal grounding contract. Slack renders the structured source
-    # list only when requested, avoiding duplicate IDs in both prose and the source section.
-    display_answer = hide_artifact_citations(response.answer)
+    # Artifact markers and prompt-block labels are internal scaffolding. Slack renders the
+    # structured source list only when requested, avoiding duplicate IDs in prose and sources.
+    display_answer = hide_internal_markers(response.answer)
     escaped_answer = _escape_slack_text(display_answer)
     source_lines = [
         f"- {_escape_source_label(source.title)} (`{_safe_inline_code(source.artifact_id)}`)"

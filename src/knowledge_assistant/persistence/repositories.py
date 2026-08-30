@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from sqlalchemy import Numeric, cast, delete, func, insert, select, update
+from sqlalchemy import Numeric, and_, cast, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -339,7 +339,7 @@ class RunLedger(Protocol):
 
     async def get_turn(self, event_id: str) -> SlackTurnRecord | None: ...
 
-    async def get_recent_suppressed_thread_messages(
+    async def get_recent_thread_recovery_messages(
         self,
         *,
         conversation_id: str,
@@ -1105,6 +1105,49 @@ class PostgresRunLedger:
                 was_created=inserted_event_id is not None,
             )
 
+    async def get_recent_thread_recovery_messages(
+        self,
+        *,
+        conversation_id: str,
+        before_message_ts: str,
+        limit: int,
+    ) -> list[str]:
+        """Return recent human messages that can restore context after silence or stop.
+
+        Includes suppressed follow-up candidates and explicit mentions whose linked run was
+        user-cancelled before a grounded answer was finalized.
+        """
+
+        normalized_conversation_id = _validate_required_identity(
+            conversation_id, "Conversation ID", 512
+        )
+        if limit < 1 or limit > 6:
+            raise RunTransitionError("Thread context limit must be between 1 and 6")
+        before_value = _parse_slack_timestamp_value(before_message_ts)
+        suppressed_follow_up = and_(
+            SlackTurn.kind == SlackTurnKind.FOLLOW_UP.value,
+            SlackTurn.status == SlackTurnStatus.SUPPRESSED.value,
+        )
+        cancelled_explicit_mention = and_(
+            SlackTurn.kind == SlackTurnKind.EXPLICIT_MENTION.value,
+            SlackTurn.agent_run_id.is_not(None),
+            AgentRun.status == RunStatus.CANCELLED.value,
+            AgentRun.cancellation_requested.is_(True),
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(SlackTurn.message_text)
+                .outerjoin(AgentRun, SlackTurn.agent_run_id == AgentRun.id)
+                .where(
+                    SlackTurn.conversation_id == normalized_conversation_id,
+                    SlackTurn.message_ts_value < before_value,
+                    or_(suppressed_follow_up, cancelled_explicit_mention),
+                )
+                .order_by(SlackTurn.message_ts_value.desc())
+                .limit(limit)
+            )
+            return list(reversed([str(row.message_text) for row in rows]))
+
     async def get_recent_suppressed_thread_messages(
         self,
         *,
@@ -1112,25 +1155,11 @@ class PostgresRunLedger:
         before_message_ts: str,
         limit: int,
     ) -> list[str]:
-        normalized_conversation_id = _validate_required_identity(
-            conversation_id, "Conversation ID", 512
+        return await self.get_recent_thread_recovery_messages(
+            conversation_id=conversation_id,
+            before_message_ts=before_message_ts,
+            limit=limit,
         )
-        if limit < 1 or limit > 6:
-            raise RunTransitionError("Thread context limit must be between 1 and 6")
-        before_value = _parse_slack_timestamp_value(before_message_ts)
-        async with self._engine.connect() as connection:
-            rows = await connection.execute(
-                select(SlackTurn.message_text)
-                .where(
-                    SlackTurn.conversation_id == normalized_conversation_id,
-                    SlackTurn.kind == SlackTurnKind.FOLLOW_UP.value,
-                    SlackTurn.status == SlackTurnStatus.SUPPRESSED.value,
-                    SlackTurn.message_ts_value < before_value,
-                )
-                .order_by(SlackTurn.message_ts_value.desc())
-                .limit(limit)
-            )
-            return list(reversed([str(row.message_text) for row in rows]))
 
     async def claim_turn(self, event_id: str) -> SlackTurnClaim:
         normalized_event_id = _validate_required_identity(event_id, "Slack event ID", 512)

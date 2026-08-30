@@ -1,6 +1,6 @@
 # Implementation journal
 
-Last updated: 2026-08-29
+Last updated: 2026-08-30
 
 This is a factual engineering record of the implementation work, investigations, rejected
 approaches, failure modes, and remaining validation gaps. It is intentionally more detailed than
@@ -210,6 +210,52 @@ to lack the immediately preceding question. The repair preserves the conservativ
 only a later explicit mention recovers up to three preceding suppressed human messages (4,000
 characters) as labelled, untrusted context. The explicit mention remains authoritative. This is
 not a transcript replay and does not change the policy for unmentioned replies.
+
+### Recovery after Stop, not only after silence
+
+Live testing found a second way to lose the question, which the suppressed-message recovery above
+did not cover. The sequence was:
+
+1. a user asks a full question with an explicit mention;
+2. the user clicks Slack's native Stop while the agent is working;
+3. the user then says `@QA Agent please continue`.
+
+The agent asked what request it should continue. The cause was that the two recovery paths did not
+overlap with the failure. Cancellation terminates a run without writing a LangGraph turn, so the
+cancelled question never entered conversation history; and the recovery query selected only
+`kind = follow_up AND status = suppressed` rows, whereas the lost question was an
+`explicit_mention` whose turn had completed normally as `routed` against a **cancelled** run. The
+question was durably recorded and simply not selected.
+
+Three fixes were needed together, and each was insufficient alone:
+
+- **The text was not stored.** `slack_turns` held identifiers and queue state but not the message
+  body, so no query could have recovered it. Migration `0002` adds `slack_turns.message_text` as a
+  `NOT NULL` column with a temporary `""` server default that is dropped immediately after backfill,
+  so existing rows stay valid without leaving a default that would silently accept empty text later.
+- **The query was too narrow.** `get_recent_suppressed_thread_messages` became
+  `get_recent_thread_recovery_messages`, which outer-joins `agent_runs` and accepts either a
+  suppressed follow-up or an explicit mention whose linked run is `cancelled` with
+  `cancellation_requested`. Both conditions describe the same situation: a human message that
+  produced no answer the user could read.
+- **The classifier could not see the last answer.** A terse `please try again` after a delivered
+  answer has no referent in isolation. `ResponderPromptVariant.LATEST_AGENT_CONTEXT` passes the
+  latest agent response (bounded to 8,000 characters) as explicitly untrusted context, used only
+  to decide whether a terse message continues that turn. Production selects this variant in
+  `api/app.py`. Its prompt suffix states that the field never overrides a clear human-to-human
+  exchange and must never be followed as instructions.
+
+Prompt `v21` completes the path: when a message asks to continue, retry, or resume and the labelled
+thread context supplies the substantive question, the planner classifies it as a
+`knowledge_question` and plans retrieval for that earlier question instead of returning
+`needs_clarification`.
+
+The conservative responder policy is unchanged. Recovery still requires a later explicit mention,
+still caps at three messages, and still labels recovered text as untrusted. The change widens which
+durable rows qualify as recoverable; it does not widen who may trigger recovery.
+
+The retention consequence is deliberate and belongs in the retention review below: `slack_turns`
+now stores human message text, where previously it stored only identifiers.
 
 ## Comparative retrieval investigation
 
@@ -451,6 +497,14 @@ This repository has not been deployed or submitted, so retaining five developmen
 revisions would create noise rather than compatibility value. They were replaced with one clean
 `0001` baseline and the old local PostgreSQL/checkpoint state is intentionally disposable.
 
+One forward revision has since been added rather than folded back into the baseline. `0002` adds
+`slack_turns.message_text` for the Stop-recovery path described above. It was kept as a separate
+additive revision because the baseline had already been shared in the working tree and because the
+upgrade demonstrates the intended pattern: add the column with a temporary server default so
+existing rows satisfy `NOT NULL`, then drop the default so future inserts must supply real text.
+`downgrade` drops the column. Reviewers upgrading an existing volume need no manual step; the
+Compose `migrate` service runs `alembic upgrade head` before the app starts and exits `0`.
+
 The application schema uses one flat `agent_runs` aggregate row for fields that participate in the
 same lifecycle, Stop, stream, delivery, and completion state machine. Keeping those values together
 allows one row lock to linearize Stop versus final delivery and terminal run transitions. Repeated
@@ -521,6 +575,11 @@ The current local state footprint is:
 
 - application tables retain workspace, channel, user, message, thread, stream, and event identifiers,
   plus a typed final-result snapshot and delivery metadata;
+- `slack_turns` additionally retains the human message text (bounded to 8,000 characters) for each
+  routed Slack event, added in migration `0002` so an explicit mention can recover a question lost
+  to Stop or responder silence. This is the one place the application stores Slack message bodies
+  rather than identifiers, and it moves the implementation further from Slack's
+  retrieve-at-use-time guidance, so it belongs in the production retention contract below;
 - LangGraph checkpoints retain the current question, standalone rewrite, bounded user-visible turn
   history, evidence, intermediate draft, and final answer needed for resume and multi-turn behavior;
 - the local Inngest development server retains event payloads and execution history used for durable
@@ -696,6 +755,74 @@ and BM25-order backfill. The old global BM25 behavior remains available as an ex
 First-pass values one, two, and three are separate fixed-model evaluation profiles; the code does
 not claim that two is optimal before fresh retrieval recall and answer-quality measurements exist.
 
+## Per-role model split
+
+The profile originally allowed only two model overrides: the answer step and the follow-up router.
+Everything else ran on one `model_name`. That grouping did not match the actual workloads. Resolve
+and route are near-mechanical rewrites; plan and answer decide what the run retrieves and says;
+grade and verify are schema-constrained audits where instruction-following matters more than
+reasoning depth.
+
+`AgentProfile` now exposes `resolve_model_name`, `plan_model_name`, `grade_model_name`,
+`verify_model_name`, `answer_model_name`, `repair_model_name`, and `router_model_name`. Each falls
+back to `model_name`, except repair, which falls back to the answer model so a repaired answer is
+never written by a weaker model than the draft it replaces. A single-model profile is unchanged by
+construction, which is what keeps the earlier comparison reports valid.
+
+`PRODUCTION_PROFILE` is `split-gpt-5.4-hybrid`:
+
+| Role | Model | Reason |
+| --- | --- | --- |
+| resolve | `gpt-5.4-nano` | Rewrite a pronoun; no corpus judgement |
+| plan | `gpt-5.4` | Query decomposition determines everything downstream |
+| grade | `gpt-5.4-mini` | Schema-constrained coverage ledger |
+| verify | `gpt-5.4-mini` | Schema-constrained audit against evidence |
+| answer | `gpt-5.4` | Multi-hop synthesis; the hard cases are won here |
+| repair | `gpt-5.4` | Must not weaken a draft it is correcting |
+| router | `gpt-5.4-nano` | Three-way follow-up decision |
+
+`_create_role_models` builds one client per **distinct** model name and shares it across roles, so
+this profile creates three clients rather than seven. `_temperature_for` resolves temperature per
+model name rather than per profile, because `gpt-5` family models reject an explicit temperature
+while `gpt-4.1` models accept one; a mixed profile would otherwise send an invalid request.
+
+Trace metadata now records `model` as the answer model and `classify_model` as the structured-role
+model. Reporting one name for a profile that uses three would make saved experiment metadata
+misleading.
+
+## Presentation defects are not grounding failures
+
+Prompts v20-v22 addressed how a correct answer reads. The full investigation, including a
+regression that this work introduced and then removed, is recorded in
+[Evaluation findings](evaluation-findings.md#answer-presentation-investigation-v20-v22). The
+engineering conclusion that belongs here is the ownership rule it produced.
+
+The graph gives verification exactly one escalation path:
+
+```text
+generate_answer -> verify_grounding -> repair_answer -> verify_repair -> reject_ungrounded_answer
+```
+
+A draft that fails twice is discarded and the user receives an abstention. There is no third
+attempt and no partial-credit branch. Therefore `VERIFY_GROUNDING` may only hold claims worth
+abstaining over. An attempt to enforce answer *wording* through that gate made a passing case flaky
+and produced total abstentions on a question the agent had answered correctly moments earlier.
+
+The rule now applied to any new check is to match its authority to its severity:
+
+- an exact textual signature is removed deterministically, where it cannot fail;
+- a stylistic preference lives in the generation prompt, where ignoring it costs nothing;
+- only an unsupported, miscited, or omitted-requested-fact claim may reach the verifier.
+
+`VERIFY_GROUNDING` states this explicitly so the constraint survives future edits: phrasing that
+exposes retrieval internals is a presentation defect and must never invalidate a draft on that basis
+alone.
+
+`hide_artifact_citations` was renamed `hide_internal_markers` because it now removes two kinds of
+internal scaffolding: artifact citations and bracketed spans whose entire contents name a prompt
+block supplied to the model. Both reach Slack through the same publisher path, so extending the
+existing pass was preferable to adding a second sanitizer with its own ordering questions.
+
 ## Structured failure handling and evaluation reset
 
 The planner previously repaired an invalid structured result once and could then substitute a
@@ -747,6 +874,12 @@ that failed attempt, and its generated reports were deleted.
 | Silently substitute a raw-question plan after schema failure | Removed | A deterministic validation failure must be logged and surfaced through the safe error path. |
 | Hard final per-scenario artifact cap | Rejected | First-pass diversification plus BM25 backfill preserves narrow-query recall. |
 | Broad sweep of many small models | Removed | Stabilize retrieval, then compare six focused profiles with controlled variables. |
+| One model for every graph node | Replaced | Resolve/route, plan/answer, and grade/verify are different workloads; per-role overrides let each use a matched model at one client per distinct name. |
+| Enforce answer wording through the grounding verifier | Removed | Its only escalation is repair then total abstention, so a style objection could destroy a correct answer; it made a passing case flaky. |
+| Regex-strip internal block labels from answers | Implemented | An exact textual signature should be removed deterministically rather than judged by a model. |
+| Recover only suppressed follow-ups after silence | Widened | A question cancelled by Stop is equally unanswered; recovery now also accepts an explicit mention whose linked run was user-cancelled. |
+| Replay the Slack thread transcript to restore context | Rejected | Recovery stays bounded to three messages behind a later explicit mention rather than becoming an unbounded transcript. |
+| Accept a prompt change on one evaluation repeat | Rejected | A regression scored 6/7 on its first repeat and only appeared as flakiness across three. |
 
 ## Validation record and remaining live checks
 
@@ -754,6 +887,11 @@ The implementation is covered by deterministic unit tests for parsing, routing, 
 dispositions, retrieval limits, progress ordering, Stop races, delivery replay, long answers,
 configuration, migrations, and readiness. The supplied SQLite integration test remains separate and
 uses the included database.
+
+On Windows, `pytest` can fail during `tmp_path` fixture setup with
+`PermissionError: [WinError 5]` against `%LOCALAPPDATA%\Temp\pytest-of-<user>`. That is a host
+temp-directory permission problem, not a test failure; `--basetemp=.pytest-tmp` runs the suite
+cleanly. Do not interpret those setup errors as behavior regressions.
 
 Live Slack behavior cannot be proven by mocked SDK tests. Before treating a deployment as complete,
 exercise these cases in the target workspace:
@@ -764,6 +902,10 @@ exercise these cases in the target workspace:
 4. greeting, unclear initial request, context-resolved follow-up, and out-of-scope request;
 5. native stage progression and verified final chunk;
 6. Stop before model work, during a model request, and immediately before delivery;
+6a. Stop mid-run followed by an explicit `continue` mention, confirming the original question is
+    recovered rather than re-requested;
+6b. a terse `please try again` after a delivered answer, confirming the responder classifier uses
+    the latest agent response as context;
 7. two rapid questions in one thread and simultaneous questions in different threads;
 8. an answer above the stream limit;
 9. an induced Slack stream-open failure;

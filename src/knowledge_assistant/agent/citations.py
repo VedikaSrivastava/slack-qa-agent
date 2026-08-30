@@ -13,6 +13,12 @@ from knowledge_assistant.retrieval.models import EvidenceItem
 _BRACKET_PATTERN = re.compile(r"\[([^\[\]]+)\]")
 _ARTIFACT_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])(art_[A-Za-z0-9_-]+)(?![A-Za-z0-9_-])")
 
+# Labels naming the scaffolding blocks supplied to the model. Answers occasionally echo one as if
+# it were a citable source, which exposes retrieval internals to Slack readers.
+_INTERNAL_BLOCK_LABELS = frozenset(
+    {"ACCOUNT_LOOKUP_COVERAGE", "PLANNED_COMPARISON_FOLLOW_UP_QUERIES"}
+)
+
 
 def cited_artifact_ids(answer: str) -> set[str]:
     return {
@@ -22,13 +28,18 @@ def cited_artifact_ids(answer: str) -> set[str]:
     }
 
 
-def hide_artifact_citations(answer: str) -> str:
-    """Remove only provenance markers, leaving ordinary bracketed Slack prose intact."""
+def hide_internal_markers(answer: str) -> str:
+    """Remove provenance markers and prompt-block labels, leaving ordinary bracketed prose intact."""
 
-    def replace_citation(match: re.Match[str]) -> str:
-        return "" if _ARTIFACT_ID_PATTERN.search(match.group(1)) else match.group(0)
+    def replace_marker(match: re.Match[str]) -> str:
+        bracket_content = match.group(1)
+        if _ARTIFACT_ID_PATTERN.search(bracket_content):
+            return ""
+        if bracket_content.strip() in _INTERNAL_BLOCK_LABELS:
+            return ""
+        return match.group(0)
 
-    return re.sub(r"[ \t]*\[([^\[\]]+)\]", replace_citation, answer)
+    return re.sub(r"[ \t]*\[([^\[\]]+)\]", replace_marker, answer)
 
 
 def citation_issues(answer: str, evidence: list[EvidenceItem]) -> list[str]:

@@ -1,0 +1,363 @@
+{
+  "manifest": {
+    "label": "matrix",
+    "suite": "full",
+    "dataset_digest": "ac16383cd1ad83a28b5a5225e3f15ded8bf983425f6f6baa1e217f0fd456ee1c",
+    "annotation_digest": "9b1bdd0a7434bafd77d83776fc2c2d77cfbc755f0a21f8003d7c40de2e748578",
+    "case_count": 7,
+    "repeats": 1,
+    "follow_up_variants": [],
+    "follow_up_case_count": 0,
+    "follow_up_dataset_digest": null,
+    "follow_up_annotation_digest": null,
+    "application_version": "0.1.0",
+    "evaluation_protocol_version": "v13",
+    "prompt_version": "v19",
+    "retrieval_version": "v12",
+    "git_commit": "24170ce",
+    "git_dirty": true,
+    "python": "3.12.13",
+    "started_at": "2026-08-30T05:57:39.820711+00:00",
+    "profiles": [
+      "split-gpt-5.4-hybrid"
+    ]
+  },
+  "generated_at": "2026-08-30T05:58:55.008752+00:00",
+  "profiles": {
+    "split-gpt-5.4-hybrid": {
+      "profile": {
+        "name": "split-gpt-5.4-hybrid",
+        "model_name": "gpt-5.4-nano",
+        "temperature": null,
+        "max_history_turns": 6,
+        "max_initial_queries": 3,
+        "max_refined_queries": 2,
+        "search_limit": 5,
+        "max_artifacts": 16,
+        "max_retrieval_rounds": 2,
+        "max_tool_calls": 8,
+        "max_model_calls": 9,
+        "fts_candidate_multiplier": 6,
+        "fts_first_pass_results_per_scenario": 2,
+        "reasoning_effort": "low",
+        "answer_model_name": "gpt-5.4",
+        "repair_model_name": "gpt-5.4",
+        "resolve_model_name": "gpt-5.4-nano",
+        "plan_model_name": "gpt-5.4",
+        "grade_model_name": "gpt-5.4-mini",
+        "verify_model_name": "gpt-5.4-mini",
+        "router_model_name": "gpt-5.4-nano"
+      },
+      "suite": "full",
+      "dataset_digest": "ac16383cd1ad83a28b5a5225e3f15ded8bf983425f6f6baa1e217f0fd456ee1c",
+      "annotation_digest": "9b1bdd0a7434bafd77d83776fc2c2d77cfbc755f0a21f8003d7c40de2e748578",
+      "follow_up_case_count": 0,
+      "follow_up_dataset_digest": null,
+      "follow_up_annotation_digest": null,
+      "application_version": "0.1.0",
+      "evaluation_protocol_version": "v13",
+      "prompt_version": "v19",
+      "retrieval_version": "v12",
+      "git_commit": "24170ce",
+      "git_dirty": true,
+      "run_id": "9ba3e42e1921",
+      "started_at": "2026-08-30T05:57:39.820711+00:00",
+      "finished_at": "2026-08-30T05:58:55.002241+00:00",
+      "suite_errors": [],
+      "deterministic_diagnostics": {
+        "pooled": {
+          "case_count": 7,
+          "strict_contract_pass_rate": 0.8571428571428571,
+          "scope_pass_rates": {
+            "content_exact": 0.75,
+            "evidence": 1.0,
+            "operations": 1.0,
+            "safety": null
+          },
+          "scope_applicable_case_counts": {
+            "content_exact": 4,
+            "evidence": 7,
+            "operations": 7,
+            "safety": 0
+          },
+          "check_pass_rates": {
+            "answerability_behavior": 1.0,
+            "citation_integrity": 1.0,
+            "diagnostic_citation_coverage": 0.7142857142857143,
+            "diagnostic_retrieval_coverage": 0.8571428571428571,
+            "exact_commands": 1.0,
+            "exact_dates": 0.5,
+            "lexical_entities": 0.8,
+            "lexical_fact_anchors": 0.0,
+            "required_customer_recall": 1.0,
+            "retrieval_round_budget": 1.0,
+            "source_attribution": 1.0,
+            "tool_call_budget": 1.0
+          },
+          "check_score_means": {
+            "diagnostic_citation_coverage": 0.7857142857142857,
+            "diagnostic_retrieval_coverage": 0.8571428571428571,
+            "exact_commands": 1.0,
+            "exact_dates": 0.75,
+            "lexical_entities": 0.8,
+            "lexical_fact_anchors": 0.48574917146345714,
+            "required_customer_recall": 1.0
+          },
+          "lexical_content_coverage": {
+            "macro_per_case": 0.6388343799058085,
+            "micro": 0.6341463414634146,
+            "by_group_micro": {
+              "commands": 1.0,
+              "customers": 1.0,
+              "dates": 0.6666666666666666,
+              "entities": 0.8,
+              "facts": 0.48148148148148145
+            },
+            "per_case": {
+              "official-blueharbor-proof-plan": 0.875,
+              "official-verdant-window-rollback": 0.7142857142857143,
+              "official-mapleharvest-mappings-workshop": 0.7142857142857143,
+              "official-aureum-scim-fix": 0.5,
+              "official-blueharbor-defection-risk": 0.23076923076923078,
+              "official-na-west-account-groups": 0.875,
+              "official-canada-approval-pattern": 0.5625
+            }
+          },
+          "diagnostic_source_coverage": {
+            "citation_mean": 0.7857142857142857,
+            "retrieval_mean": 0.8571428571428571
+          },
+          "per_case_contract": {
+            "official-blueharbor-proof-plan": true,
+            "official-verdant-window-rollback": true,
+            "official-mapleharvest-mappings-workshop": true,
+            "official-aureum-scim-fix": true,
+            "official-blueharbor-defection-risk": false,
+            "official-na-west-account-groups": true,
+            "official-canada-approval-pattern": true
+          },
+          "latency_ms": {
+            "p50": 10030.0,
+            "p95": 15397.0,
+            "p99": 15397.0,
+            "mean": 10545.857142857143,
+            "max": 15397.0
+          },
+          "tool_calls": {
+            "total": 27,
+            "mean_per_case": 3.857142857142857,
+            "max": 5
+          },
+          "model_calls": {
+            "total": 30,
+            "mean_per_case": 4.285714285714286,
+            "max": 5
+          },
+          "retrieval_rounds": {
+            "mean_per_case": 1.2857142857142858,
+            "max": 2
+          },
+          "tokens": {
+            "input_total": 162449,
+            "output_total": 9555,
+            "total": 172004,
+            "mean_total_per_case": 24572.0
+          },
+          "cost_usd": {
+            "total": null,
+            "per_case": null,
+            "per_1k_cases": null,
+            "method": "split-approx",
+            "answer_model": "gpt-5.4",
+            "prices_captured_at": "2026-08-29"
+          },
+          "answer_length": {
+            "chars_p50": 855.0,
+            "chars_mean": 1052.7142857142858,
+            "chars_max": 2266.0,
+            "words_p50": 117.0,
+            "words_mean": 128.28571428571428,
+            "words_max": 259.0
+          },
+          "reliability": {
+            "strict_contract_passed_cases": 6,
+            "budget_exceeded_cases": 0,
+            "answerability_behavior_failed_cases": 0
+          }
+        },
+        "attempted_repeats": 1,
+        "completed_repeats": 1,
+        "repeat_completion_rate": 1.0,
+        "per_repeat_strict_contract_rate": [
+          0.8571428571428571
+        ],
+        "strict_contract_rate_mean": 0.8571428571428571,
+        "strict_contract_rate_min": 0.8571428571428571,
+        "strict_contract_rate_max": 0.8571428571428571,
+        "per_case_contract_pass_count": {
+          "official-blueharbor-proof-plan": 1,
+          "official-verdant-window-rollback": 1,
+          "official-mapleharvest-mappings-workshop": 1,
+          "official-aureum-scim-fix": 1,
+          "official-blueharbor-defection-risk": 0,
+          "official-na-west-account-groups": 1,
+          "official-canada-approval-pattern": 1
+        },
+        "flaky_contract_case_ids": [],
+        "always_contract_fail_case_ids": [
+          "official-blueharbor-defection-risk"
+        ],
+        "last_repeat_cases": [
+          {
+            "case_id": "official-blueharbor-proof-plan",
+            "strict_contract_passed": true,
+            "failed_gates": [],
+            "lexical_hits": {
+              "facts": [
+                6,
+                7
+              ],
+              "entities": [
+                1,
+                1
+              ]
+            },
+            "answer_words": 166,
+            "tool_calls": 4,
+            "model_calls": 4,
+            "retrieval_rounds": 1
+          },
+          {
+            "case_id": "official-verdant-window-rollback",
+            "strict_contract_passed": true,
+            "failed_gates": [],
+            "lexical_hits": {
+              "facts": [
+                2,
+                4
+              ],
+              "entities": [
+                1,
+                1
+              ],
+              "dates": [
+                1,
+                1
+              ],
+              "commands": [
+                1,
+                1
+              ]
+            },
+            "answer_words": 53,
+            "tool_calls": 3,
+            "model_calls": 4,
+            "retrieval_rounds": 1
+          },
+          {
+            "case_id": "official-mapleharvest-mappings-workshop",
+            "strict_contract_passed": true,
+            "failed_gates": [],
+            "lexical_hits": {
+              "facts": [
+                9,
+                13
+              ],
+              "entities": [
+                1,
+                1
+              ]
+            },
+            "answer_words": 81,
+            "tool_calls": 3,
+            "model_calls": 4,
+            "retrieval_rounds": 1
+          },
+          {
+            "case_id": "official-aureum-scim-fix",
+            "strict_contract_passed": true,
+            "failed_gates": [],
+            "lexical_hits": {
+              "facts": [
+                3,
+                7
+              ],
+              "entities": [
+                1,
+                1
+              ]
+            },
+            "answer_words": 78,
+            "tool_calls": 4,
+            "model_calls": 4,
+            "retrieval_rounds": 1
+          },
+          {
+            "case_id": "official-blueharbor-defection-risk",
+            "strict_contract_passed": false,
+            "failed_gates": [
+              "exact_dates"
+            ],
+            "lexical_hits": {
+              "facts": [
+                2,
+                10
+              ],
+              "entities": [
+                0,
+                1
+              ],
+              "dates": [
+                1,
+                2
+              ]
+            },
+            "answer_words": 117,
+            "tool_calls": 4,
+            "model_calls": 5,
+            "retrieval_rounds": 2
+          },
+          {
+            "case_id": "official-na-west-account-groups",
+            "strict_contract_passed": true,
+            "failed_gates": [],
+            "lexical_hits": {
+              "facts": [
+                2,
+                4
+              ],
+              "customers": [
+                12,
+                12
+              ]
+            },
+            "answer_words": 259,
+            "tool_calls": 4,
+            "model_calls": 4,
+            "retrieval_rounds": 1
+          },
+          {
+            "case_id": "official-canada-approval-pattern",
+            "strict_contract_passed": true,
+            "failed_gates": [],
+            "lexical_hits": {
+              "facts": [
+                2,
+                9
+              ],
+              "customers": [
+                7,
+                7
+              ]
+            },
+            "answer_words": 144,
+            "tool_calls": 5,
+            "model_calls": 5,
+            "retrieval_rounds": 2
+          }
+        ]
+      },
+      "follow_up_routing": {}
+    }
+  }
+}

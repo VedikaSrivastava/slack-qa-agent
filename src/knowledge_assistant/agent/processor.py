@@ -234,7 +234,8 @@ class LangGraphQuestionProcessor:
                 "conversation_id": conversation_id,
                 "prompt_version": PROMPT_VERSION,
                 "retrieval_version": RETRIEVAL_VERSION,
-                "model": self._profile.model_name,
+                "model": self._profile.answer_model(),
+                "classify_model": self._profile.model_name,
                 "agent_profile": self._profile.name,
                 "environment": self._settings.app_env,
                 "application_version": APPLICATION_VERSION,
@@ -419,34 +420,50 @@ def _create_chat_model(
     settings: AgentRuntimeSettings,
     profile: AgentProfile,
     *,
+    model_name: str | None = None,
     max_retries: int | None = None,
 ) -> BaseChatModel:
-    """The model for the structured classification roles (resolve / plan / grade / verify)."""
+    """Build one chat model for a profile role."""
 
+    resolved_model_name = model_name or profile.model_name
     return _build_chat_model(
         settings,
-        model_name=profile.model_name,
-        temperature=profile.temperature,
+        model_name=resolved_model_name,
+        temperature=profile._temperature_for(resolved_model_name),
         reasoning_effort=profile.reasoning_effort,
         max_retries=max_retries,
     )
 
 
-def _create_answer_model(
+def _create_role_models(
     settings: AgentRuntimeSettings,
     profile: AgentProfile,
     *,
     max_retries: int | None = None,
-) -> BaseChatModel:
-    """Build the optional dedicated model for `generate_answer` and `repair_answer`."""
+) -> dict[str, BaseChatModel]:
+    """Reuse one client per distinct model name while honoring per-role overrides."""
 
-    return _build_chat_model(
-        settings,
-        model_name=profile.answer_model(),
-        temperature=profile.answer_temperature(),
-        reasoning_effort=profile.reasoning_effort,
-        max_retries=max_retries,
-    )
+    models_by_name: dict[str, BaseChatModel] = {}
+
+    def model_for(name: str) -> BaseChatModel:
+        if name not in models_by_name:
+            models_by_name[name] = _create_chat_model(
+                settings,
+                profile,
+                model_name=name,
+                max_retries=max_retries,
+            )
+        return models_by_name[name]
+
+    return {
+        "default": model_for(profile.model_name),
+        "resolve": model_for(profile.resolve_model()),
+        "plan": model_for(profile.plan_model()),
+        "grade": model_for(profile.grade_model()),
+        "verify": model_for(profile.verify_model()),
+        "answer": model_for(profile.answer_model()),
+        "repair": model_for(profile.repair_model()),
+    }
 
 
 def _create_langfuse_handler(settings: AgentRuntimeSettings) -> CallbackHandler | None:
@@ -493,12 +510,7 @@ async def create_question_processor(
 
     if not settings.knowledge_db_path.is_file():
         raise FileNotFoundError(f"Knowledge database does not exist: {settings.knowledge_db_path}")
-    model = _create_chat_model(settings, profile, max_retries=max_retries)
-    answer_model = (
-        _create_answer_model(settings, profile, max_retries=max_retries)
-        if profile.answer_model_name is not None
-        else model
-    )
+    role_models = _create_role_models(settings, profile, max_retries=max_retries)
     langfuse_handler = _create_langfuse_handler(settings)
     repository = SQLiteKnowledgeRepository(
         settings.knowledge_db_path,
@@ -521,7 +533,15 @@ async def create_question_processor(
 
     async with _open_checkpointer() as active_checkpointer:
         workflow_nodes = GroundedAnswerNodes(
-            model, retrieval_tools, profile, answer_model=answer_model
+            role_models["default"],
+            retrieval_tools,
+            profile,
+            resolve_model=role_models["resolve"],
+            plan_model=role_models["plan"],
+            grade_model=role_models["grade"],
+            verify_model=role_models["verify"],
+            answer_model=role_models["answer"],
+            repair_model=role_models["repair"],
         )
         # LangGraph's compiled graph is generically typed by the framework; the protocol above
         # localizes that typing gap to this construction boundary.

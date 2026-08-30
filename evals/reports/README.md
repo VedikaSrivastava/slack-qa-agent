@@ -7,19 +7,37 @@ not provider bodies or credentials. New runs use unique names and are never over
 
 ## Final deterministic report
 
-[`takehome-agent-p19-r12-e13-final-20260829-01.json`](takehome-agent-p19-r12-e13-final-20260829-01.json)
-is the final production-profile snapshot: prompt `v19`, retrieval `v12`, evaluation protocol `v13`,
-and `balanced-gpt-4.1-mini`.
+[`submission-final-v22/`](submission-final-v22/) is the current production-profile snapshot: prompt
+`v22`, retrieval `v12`, evaluation protocol `v13`, and `split-gpt-5.4-hybrid`, over three repeats
+(21 case-runs). `matrix/rollup.json` holds the metrics and `answers.json` holds generated answer
+text from a separate single-repeat `run`.
 
-- strict contract: 6/7;
-- exact content: 3/4 applicable cases;
-- evidence contract: 7/7;
-- operations contract: 7/7;
+- strict contract: 6/7 on each repeat, 18/21 pooled;
+- exact content: 0.75 of 12 applicable case-runs;
+- evidence contract: 0.9048 of 21;
+- operations contract: 1.0 of 21;
 - safety: N/A, with zero applicable cases;
-- 32 tool calls, 32 model calls, and 191,893 agent tokens;
-- estimated agent cost: $0.084898;
-- latency: 12,088 ms p50 and 74,796 ms p95/max; and
+- 89 tool calls, 92 model calls, and 544,947 agent tokens;
+- estimated agent cost: not available from the split pricing path;
+- latency: 10,376 ms p50, 20,785 ms p95, 24,391 ms max;
+- `flaky_contract_case_ids`: empty; and
 - `semantic_quality: not_judged`.
+
+`official-blueharbor-defection-risk` fails all three repeats, via `exact_dates` when it answers and
+`answerability_behavior` on the two case-runs where it abstains.
+
+[`v22-flakiness-check/`](v22-flakiness-check/) is deliberately retained as the failing artifact for
+a rejected first attempt at prompt v22, which scored 6/7, 6/7, 5/7 and made
+`official-canada-approval-pattern` flaky. See
+[Evaluation findings](../../docs/evaluation-findings.md#answer-presentation-investigation-v20-v22).
+
+[`experiment-final-gpt54-hybrid/`](experiment-final-gpt54-hybrid/) is the prompt-`v19` snapshot of
+the same profile at 6/7 strict on one repeat, superseded by the v22 report above.
+
+[`takehome-agent-p19-r12-e13-final-20260829-01.json`](takehome-agent-p19-r12-e13-final-20260829-01.json)
+is the historical `balanced-gpt-4.1-mini` snapshot at prompt `v19`: 6/7 strict, 3/4 applicable exact
+content, 32 tool and 32 model calls, 191,893 tokens, $0.084898 estimated, 12,088 ms p50 and
+74,796 ms p95/max.
 
 Exit code zero means the run completed and wrote this report, not that every gate or answer passed.
 The evidence contract checks source attribution, citation membership/integrity, and answerability

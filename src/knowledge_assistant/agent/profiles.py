@@ -14,8 +14,10 @@ The agent has two distinct LLM workloads:
 * answer synthesis -- `generate_answer` / `repair_answer`. Multi-hop reasoning, faithful
   grounding, and concision matter here; the hard questions are won or lost in this step.
 
-`AgentProfile` therefore allows a different model for the answer step (`answer_model_name`) and
-for the follow-up router (`router_model_name`); both fall back to `model_name`.
+`AgentProfile` therefore allows per-role model overrides (`resolve_model_name`, `plan_model_name`,
+`grade_model_name`, `verify_model_name`, `answer_model_name`, `repair_model_name`,
+`router_model_name`). Each falls back to `model_name`, except repair which falls back to the
+answer model.
 """
 
 from __future__ import annotations
@@ -47,12 +49,32 @@ class AgentProfile:
     fts_candidate_multiplier: int = 6
     fts_first_pass_results_per_scenario: int | None = 2
     reasoning_effort: ReasoningEffort | None = None
-    # Optional per-role overrides. None => use `model_name`.
+    # Optional per-role overrides. None => use the role's documented fallback.
     answer_model_name: str | None = None
+    repair_model_name: str | None = None
+    resolve_model_name: str | None = None
+    plan_model_name: str | None = None
+    grade_model_name: str | None = None
+    verify_model_name: str | None = None
     router_model_name: str | None = None
 
     def answer_model(self) -> str:
         return self.answer_model_name or self.model_name
+
+    def repair_model(self) -> str:
+        return self.repair_model_name or self.answer_model()
+
+    def resolve_model(self) -> str:
+        return self.resolve_model_name or self.model_name
+
+    def plan_model(self) -> str:
+        return self.plan_model_name or self.model_name
+
+    def grade_model(self) -> str:
+        return self.grade_model_name or self.model_name
+
+    def verify_model(self) -> str:
+        return self.verify_model_name or self.model_name
 
     def router_model(self) -> str:
         return self.router_model_name or self.model_name
@@ -123,6 +145,21 @@ SPLIT_GPT_5_6_LUNA_SOL = replace(
     reasoning_effort="none",
 )
 
+SPLIT_GPT_5_4_HYBRID = replace(
+    BALANCED_GPT_4_1_MINI,
+    name="split-gpt-5.4-hybrid",
+    model_name="gpt-5.4-nano",
+    temperature=None,
+    reasoning_effort="low",
+    resolve_model_name="gpt-5.4-nano",
+    plan_model_name="gpt-5.4",
+    grade_model_name="gpt-5.4-mini",
+    verify_model_name="gpt-5.4-mini",
+    answer_model_name="gpt-5.4",
+    repair_model_name="gpt-5.4",
+    router_model_name="gpt-5.4-nano",
+)
+
 MODEL_MATRIX_PROFILES: tuple[AgentProfile, ...] = (
     BALANCED_GPT_4_1_MINI,
     SPLIT_ANSWER_GPT_4_1,
@@ -130,6 +167,7 @@ MODEL_MATRIX_PROFILES: tuple[AgentProfile, ...] = (
     BALANCED_GPT_5_5,
     BALANCED_GPT_5_6_TERRA,
     SPLIT_GPT_5_6_LUNA_SOL,
+    SPLIT_GPT_5_4_HYBRID,
 )
 
 # Same model and graph budgets; only global BM25 versus first-pass diversification changes.
@@ -158,7 +196,7 @@ RETRIEVAL_TUNING_PROFILES: tuple[AgentProfile, ...] = (
     ),
 )
 
-PRODUCTION_PROFILE = BALANCED_GPT_4_1_MINI
+PRODUCTION_PROFILE = SPLIT_GPT_5_4_HYBRID
 
 EXPERIMENT_PROFILES: dict[str, AgentProfile] = {
     profile.name: profile for profile in (*MODEL_MATRIX_PROFILES, *RETRIEVAL_TUNING_PROFILES)

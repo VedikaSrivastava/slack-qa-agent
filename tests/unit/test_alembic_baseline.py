@@ -38,3 +38,4 @@ def test_baseline_compiles_complete_postgres_upgrade_sql(
     assert "inngest_event_id" not in sql
     assert "CREATE INDEX ix_slack_turns_causal_head" in sql
     assert "CREATE UNIQUE INDEX uq_slack_turns_processing_conversation" in sql
+    assert "message_text" in sql

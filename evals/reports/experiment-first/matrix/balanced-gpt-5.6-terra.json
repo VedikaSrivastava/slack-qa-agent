@@ -1,0 +1,138 @@
+{
+  "profile": {
+    "name": "balanced-gpt-5.6-terra",
+    "model_name": "gpt-5.6-terra",
+    "temperature": null,
+    "max_history_turns": 6,
+    "max_initial_queries": 3,
+    "max_refined_queries": 2,
+    "search_limit": 5,
+    "max_artifacts": 16,
+    "max_retrieval_rounds": 2,
+    "max_tool_calls": 8,
+    "max_model_calls": 9,
+    "fts_candidate_multiplier": 6,
+    "fts_first_pass_results_per_scenario": 2,
+    "reasoning_effort": "none",
+    "answer_model_name": null,
+    "router_model_name": null
+  },
+  "suite": "full",
+  "dataset_digest": "ac16383cd1ad83a28b5a5225e3f15ded8bf983425f6f6baa1e217f0fd456ee1c",
+  "annotation_digest": "9b1bdd0a7434bafd77d83776fc2c2d77cfbc755f0a21f8003d7c40de2e748578",
+  "follow_up_case_count": 0,
+  "follow_up_dataset_digest": null,
+  "follow_up_annotation_digest": null,
+  "application_version": "0.1.0",
+  "evaluation_protocol_version": "v13",
+  "prompt_version": "v19",
+  "retrieval_version": "v12",
+  "git_commit": "24170ce",
+  "git_dirty": false,
+  "run_id": "a87d99f36e86",
+  "started_at": "2026-08-30T05:02:54.078300+00:00",
+  "finished_at": "2026-08-30T05:03:32.080283+00:00",
+  "suite_errors": [
+    {
+      "error_code": "matrix_suite_repeat_failed",
+      "profile": "balanced-gpt-5.6-terra",
+      "repeat_number": 1,
+      "repeat_count": 1,
+      "exception_class": "OpenAIConnectionError",
+      "is_transient": true
+    }
+  ],
+  "deterministic_diagnostics": {
+    "pooled": {
+      "case_count": 0,
+      "strict_contract_pass_rate": 0.0,
+      "scope_pass_rates": {
+        "content_exact": null,
+        "evidence": 0.0,
+        "operations": 0.0,
+        "safety": null
+      },
+      "scope_applicable_case_counts": {
+        "content_exact": 0,
+        "evidence": 0,
+        "operations": 0,
+        "safety": 0
+      },
+      "check_pass_rates": {},
+      "check_score_means": {},
+      "lexical_content_coverage": {
+        "macro_per_case": null,
+        "micro": null,
+        "by_group_micro": {},
+        "per_case": {}
+      },
+      "diagnostic_source_coverage": {
+        "citation_mean": null,
+        "retrieval_mean": null
+      },
+      "per_case_contract": {},
+      "latency_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "mean": null,
+        "max": null
+      },
+      "tool_calls": {
+        "total": 0,
+        "mean_per_case": null,
+        "max": null
+      },
+      "model_calls": {
+        "total": 0,
+        "mean_per_case": null,
+        "max": null
+      },
+      "retrieval_rounds": {
+        "mean_per_case": null,
+        "max": null
+      },
+      "tokens": {
+        "input_total": null,
+        "output_total": null,
+        "total": null,
+        "mean_total_per_case": null
+      },
+      "cost_usd": {
+        "total": null,
+        "per_case": null,
+        "per_1k_cases": null,
+        "method": "single-model",
+        "answer_model": "gpt-5.6-terra",
+        "prices_captured_at": "2026-08-29"
+      },
+      "answer_length": {
+        "chars_p50": null,
+        "chars_mean": null,
+        "chars_max": null,
+        "words_p50": null,
+        "words_mean": null,
+        "words_max": null
+      },
+      "reliability": {
+        "strict_contract_passed_cases": 0,
+        "budget_exceeded_cases": 0,
+        "answerability_behavior_failed_cases": 0
+      }
+    },
+    "attempted_repeats": 1,
+    "completed_repeats": 0,
+    "repeat_completion_rate": 0.0,
+    "per_repeat_strict_contract_rate": [
+      0.0
+    ],
+    "strict_contract_rate_mean": 0.0,
+    "strict_contract_rate_min": 0.0,
+    "strict_contract_rate_max": 0.0,
+    "per_case_contract_pass_count": {},
+    "flaky_contract_case_ids": [],
+    "always_contract_fail_case_ids": [],
+    "last_repeat_cases": []
+  },
+  "follow_up_routing": {}
+}

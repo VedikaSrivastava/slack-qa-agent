@@ -78,7 +78,9 @@ graded. For example, a request asking which vendor has the lowest switching cost
 follows should use a comparison_query like "lowest switching cost alternative", not "lowest
 switching cost alternative deadline". Search for direct entity-level decision or commitment
 evidence as well as cross-entity risk or comparison evidence. Compare plausible candidates before
-retrieving one candidate in depth.
+retrieving one candidate in depth. When the criterion involves competitor, churn, or defection
+risk, also plan ordinary queries that can retrieve each shortlisted candidate's commitment,
+renewal, or milestone evidence — not only the discovery excerpt.
 
 Leave comparison_mode and comparison_query unset for a specific named entity, a non-comparative
 superlative such as a request for the most recent change, an ordinary lookup such as "which customer
@@ -121,7 +123,11 @@ Planning examples below illustrate structure only; their entities are not facts:
 Every account_lookup must set its purpose explicitly.
 
 Set show_sources to true only when the user asks for sources, citations, evidence, provenance, or
-supporting documents. Otherwise set it to false."""
+supporting documents. Otherwise set it to false.
+
+If the message asks to continue, retry, or resume an earlier request and labelled earlier thread
+context supplies the substantive question, classify it as knowledge_question and plan retrieval for
+that earlier question rather than needs_clarification."""
 
 GRADE_EVIDENCE = """Judge the evidence against each material part of the question separately.
 Return every supported part in supported_parts and every unsupported or uncovered part in
@@ -171,6 +177,12 @@ not a model inference or artifact text. When its status is COMPLETE_AND_AUTHORIT
 population coverage, completeness, or lack of verification in missing_parts. Only mark an individual
 cohort member missing when the retrieved evidence cannot support that member's requested category.
 
+Under MATCHING_SUBSET_ONLY, record a population gap only when the question actually depends on the
+non-matching remainder: an explicit partition, an exhaustive enumeration, or a corpus-wide rarity,
+frequency, or prevalence claim. A question asking whether something recurs, which accounts share a
+behaviour, or whether a named case is isolated is answered by the matching set itself, so its
+coverage is not a missing part.
+
 For a requested fix, plan, procedure, rollback, or workshop outcome, list every distinct
 evidence-backed component as its own supported part. Do not collapse multiple requested actions
 into one broad label that generation could satisfy only partially. Follow the evidence through its
@@ -187,50 +199,89 @@ already failed will fail again. If no materially different query can close the g
 refined queries so the system can give a supported partial answer. When nothing is missing, return
 no refined queries."""
 
-GENERATE_ANSWER = """Answer the question directly, using only the supplied evidence.
+GENERATE_ANSWER = """Answer the user's question directly, using only the supplied evidence.
 
-Lead with the answer and include only relevant detail. Correctness and complete coverage of the
-requested supported parts take priority over brevity. Before writing, map every supported part to
-an explicit statement in the answer; do not compress multiple parts into a vague summary or add
-supported but unrequested commercial, mitigation, or implementation detail. Use a short list when
-it makes a multi-part answer or set easier to verify. Write plain prose suitable for Slack: no
-headers, and no markdown emphasis, which will not render.
+Correctness and complete coverage of the requested supported parts come first. Before writing,
+map every supported part to an explicit statement in the answer. Do not add facts, implications,
+commercial context, mitigation details, or implementation details that were not requested.
+
+Write like an informed teammate replying in Slack: concise, natural, and easy to scan. Prefer
+short sentences and concrete language over report-style prose.
+
+Choose the response shape that best fits the question:
+
+- For a simple factual lookup, answer in one or two short paragraphs.
+- For a comparison, classification, partition, or "X versus Y" question, use short category labels
+  with bullets or compact lines underneath them.
+- For a set of entities, prefer a list when listing the names inline would make the answer dense.
+- For a sequence, procedure, fix, rollback, or plan, use ordered steps when order matters.
+- For a yes/no question, state the finding in the first sentence, then give the minimum supporting
+  explanation needed.
+- For a ranking or selection, name the best-supported result first, then briefly explain why and
+  mention evidence-backed ambiguity when one exists.
+
+Do not prefix the response with generic labels such as "Answer:", "Response:", "In plain English:",
+or "Based on the evidence". Category labels that communicate actual content, such as
+"Taxonomy/search semantics:" or "Duplicate-action problems:", are encouraged when they make a
+comparison easier to scan.
+
+Do not restate the user's full question. Do not narrate your reasoning process. Do not describe
+how evidence was retrieved or assembled.
+
+Avoid unnecessarily formal phrases such as "the aforementioned accounts", "the evidence indicates",
+or "these entities are dealing with". Prefer natural phrasing such as "These accounts all saw..."
+or "This group is mainly dealing with...".
+
+Keep explanations adjacent to what they explain. For example, when grouping accounts by issue,
+list the accounts for one category and immediately give the common pattern before moving to the
+next category.
+
+Use Slack-friendly formatting:
+- short paragraphs
+- bullets for lists
+- blank lines between materially different groups
+- simple descriptive labels when useful
+Do not use Markdown headings. Do not use decorative formatting or excessive emphasis.
+
+Describe the customers, systems, and events, never how the evidence was assembled. Do not name
+ACCOUNT_LOOKUP_COVERAGE or any other supplied block, cite one as though it were a source, or refer
+to retrieval machinery through phrases such as "the retrieved subset", "the returned accounts",
+"the supplied evidence", or "the lookup metadata".
 
 Copy dates, time windows, commands, identifiers, thresholds, version strings, and conditional or
-approval qualifiers exactly as the evidence states them. A qualifier that limits when, whether,
-or for whom something applies is part of the fact, not decoration. If evidence provides a full
-date including a year, keep the year even when the question abbreviates the date to month and day.
+approval qualifiers exactly as the evidence states them. When evidence includes a runnable command
+or CLI invocation, reproduce it verbatim inside backticks. A qualifier that limits when, whether,
+or for whom something applies is part of the fact, not decoration.
+
+When describing a committed milestone, plan, or SLA chain, state every deadline date the evidence
+assigns to that chain when the user asks about that chain.
 
 You may aggregate, count, group, and compare across artifacts. When you name a set of entities,
 every member must appear in the evidence, and each must carry the artifact supporting it.
 
 For a requested fix, plan, procedure, rollback, or workshop outcome, include every distinct
-evidence-backed component named in the supported-parts list. Do not stop after the primary action;
-include every accepted or co-prioritized component. Correct coverage takes priority over brevity.
+evidence-backed component named in the supported-parts list. Do not stop after the primary action.
 
-When the question asks what a person or team proposed, independently scan the relevant evidence for
-the complete proposal and include each directly coupled component attributed to them. The
-supported-parts list is a coverage aid, not permission to stop after the first proposed action.
-Proposal components may appear later in the artifact in a decision or action-item recap.
+When the question asks what a person or team proposed, independently scan the relevant evidence
+for the complete proposal and include each directly coupled component attributed to them.
 
 For a ranking or selection, apply every qualifier in the question to the plausible candidates.
-State a unique winner only when the supplied evidence supports that comparison; otherwise give the
-best-supported reading and name the evidence-backed ambiguity. After selecting a candidate, provide
-the complete evidence-backed follow-on fact.
+Do not treat the first keyword match as the winner. State a unique winner only when the evidence
+supports that comparison; otherwise give the best-supported reading and state the specific
+evidence-backed ambiguity.
 
 Treat retrieval_origin=search_excerpt as shortlist context only. Do not base a unique winner,
 absence claim, or complete follow-on answer solely on an excerpt.
 
 The ACCOUNT_LOOKUP_COVERAGE block is trusted database metadata. When its status is
-COMPLETE_AND_AUTHORITATIVE, the evidence contains the full bounded population. Do not disclaim or
-hedge population completeness; saying that complete coverage is missing would contradict the
-trusted metadata.
+COMPLETE_AND_AUTHORITATIVE, the evidence contains the full bounded population. Do not hedge
+population completeness.
 
-If the evidence covers only part of the question, answer that part and state plainly what is
-missing, rather than hedging the entire answer. State a gap only for an explicit requested part
-listed in missing_parts. Do not volunteer that unrequested implementation detail, validation
-criteria, or population evidence is absent. If artifacts conflict, give the reading the evidence
-best supports and note the conflict."""
+If the evidence covers only part of the question, answer the supported part normally and then
+state the specific missing part in one concise sentence. Name the business-level gap, not a
+retrieval or system limitation.
+
+If artifacts conflict, give the reading the evidence best supports and briefly note the conflict."""
 
 VERIFY_GROUNDING = """Audit the draft against both the question and the evidence, and return each
 specific failure rather than a single unexplained verdict.
@@ -275,7 +326,12 @@ used a month-and-day shorthand.
 
 Accept cohort coverage as established when ACCOUNT_LOOKUP_COVERAGE says
 COMPLETE_AND_AUTHORITATIVE. Mark a draft invalid if it claims that verification or population
-coverage is missing despite that status.
+coverage is missing despite that status. Under MATCHING_SUBSET_ONLY, a coverage caveat is warranted
+only when the question depends on the non-matching remainder, so never require one and never
+invalidate a draft that omits one.
+
+Phrasing that exposes retrieval internals is a presentation defect, not a grounding failure. Never
+mark a draft invalid on that basis alone.
 
 For an offending claim, report the span plus the reason. For an omission, report the requested
 part plus the supported fact that is missing, so repair can be targeted. Distinguish a claim
@@ -294,4 +350,4 @@ explicit insufficient-evidence response only when the central claim the question
 cannot be supported.
 
 Copy dates, time windows, commands, identifiers, thresholds, and qualifiers verbatim from the
-evidence"""
+evidence. Reproduce runnable commands inside backticks exactly as written."""

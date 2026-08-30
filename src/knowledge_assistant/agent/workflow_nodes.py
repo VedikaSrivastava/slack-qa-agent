@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from knowledge_assistant.agent.citations import (
     citation_issues,
-    hide_artifact_citations,
+    hide_internal_markers,
     references_for_cited_evidence,
 )
 from knowledge_assistant.agent.models import EvidenceReference, QuestionDisposition
@@ -617,13 +617,22 @@ class GroundedAnswerNodes:
         tools: KnowledgeRetrievalTools,
         profile: AgentProfile,
         *,
+        resolve_model: BaseChatModel | None = None,
+        plan_model: BaseChatModel | None = None,
+        grade_model: BaseChatModel | None = None,
+        verify_model: BaseChatModel | None = None,
         answer_model: BaseChatModel | None = None,
+        repair_model: BaseChatModel | None = None,
     ) -> None:
-        # `model` runs the structured classification nodes (resolve / plan / grade / verify).
-        # `answer_model` runs `generate_answer` / `repair_answer`; it defaults to `model` so a
-        # single-model profile is unchanged.
+        # Each node uses the model best matched to its workload. Unset overrides fall back to
+        # `model`, which keeps single-model profiles unchanged.
         self._model = model
+        self._resolve_model = resolve_model or model
+        self._plan_model = plan_model or model
+        self._grade_model = grade_model or model
+        self._verify_model = verify_model or model
         self._answer_model = answer_model or model
+        self._repair_model = repair_model or self._answer_model
         self._tools = tools
         self._profile = profile
 
@@ -639,10 +648,13 @@ class GroundedAnswerNodes:
         self,
         output_type: type[StructuredOutput],
         messages: list[BaseMessage],
+        *,
+        model: BaseChatModel | None = None,
     ) -> tuple[StructuredOutput, object | None]:
         """Return parsed output plus its raw message so usage survives graph checkpoints."""
 
-        structured_model = self._model.with_structured_output(output_type, include_raw=True)
+        active_model = model or self._model
+        structured_model = active_model.with_structured_output(output_type, include_raw=True)
         result = await structured_model.ainvoke(messages)
         # Test doubles and some compatible model wrappers may return the parsed object directly.
         if isinstance(result, output_type):
@@ -671,6 +683,7 @@ class GroundedAnswerNodes:
         messages: list[BaseMessage],
         *,
         state: AgentState,
+        model: BaseChatModel | None = None,
     ) -> tuple[StructuredOutput, AgentState]:
         """Re-ask once for an invalid schema, then surface a typed terminal failure.
 
@@ -682,7 +695,11 @@ class GroundedAnswerNodes:
         input_tokens = state.get("input_tokens", 0)
         output_tokens = state.get("output_tokens", 0)
         try:
-            parsed, raw_response = await self._invoke_structured(output_type, messages)
+            parsed, raw_response = await self._invoke_structured(
+                output_type,
+                messages,
+                model=model,
+            )
             call_input_tokens, call_output_tokens = _token_usage(raw_response)
             return parsed, {
                 "model_call_count": model_call_count,
@@ -715,7 +732,11 @@ class GroundedAnswerNodes:
             retry_state: AgentState = {**state, "model_call_count": model_call_count}
             model_call_count = self._next_model_call_count(retry_state)
             try:
-                parsed, raw_response = await self._invoke_structured(output_type, retry_messages)
+                parsed, raw_response = await self._invoke_structured(
+                    output_type,
+                    retry_messages,
+                    model=model,
+                )
                 call_input_tokens, call_output_tokens = _token_usage(raw_response)
                 input_tokens += call_input_tokens
                 output_tokens += call_output_tokens
@@ -776,6 +797,7 @@ class GroundedAnswerNodes:
                 ),
             ],
             state=state,
+            model=self._resolve_model,
         )
         return {
             "standalone_question": parsed.question,
@@ -814,6 +836,7 @@ class GroundedAnswerNodes:
                 ),
             ],
             state=state,
+            model=self._plan_model,
         )
         available_turn_ids = {turn["agent_run_id"] for turn in state.get("history", [])}
         if parsed.reuse_turn_id is not None and parsed.reuse_turn_id not in available_turn_ids:
@@ -1128,6 +1151,7 @@ class GroundedAnswerNodes:
                 ),
             ],
             state=state,
+            model=self._grade_model,
         )
         account_lookup_coverage = state.get("account_lookup_coverage")
         coverage = (
@@ -1255,6 +1279,7 @@ class GroundedAnswerNodes:
                 ),
             ],
             state=state,
+            model=self._verify_model,
         )
         return {
             "grounding_valid": parsed.valid,
@@ -1267,7 +1292,7 @@ class GroundedAnswerNodes:
 
     async def repair_answer(self, state: AgentState) -> AgentState:
         model_call_count = self._next_model_call_count(state)
-        response = await self._answer_model.ainvoke(
+        response = await self._repair_model.ainvoke(
             [
                 SystemMessage(content=f"{SYSTEM_GROUNDING_RULES}\n\n{REPAIR_ANSWER}"),
                 HumanMessage(
@@ -1312,7 +1337,7 @@ class GroundedAnswerNodes:
         turn = ConversationTurn(
             agent_run_id=state["agent_run_id"],
             question=state["question"],
-            answer=hide_artifact_citations(answer),
+            answer=hide_internal_markers(answer),
             sources=response_sources,
             retrieved_artifact_ids=retrieved_artifact_ids,
         )

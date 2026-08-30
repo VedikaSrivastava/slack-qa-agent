@@ -63,9 +63,112 @@ Candidate lexical/source overlap remains non-gating.
 correctness. Similarly, a CLI exit code of zero means execution completed and a report was written;
 it is not a quality pass.
 
-## Final take-home snapshot
+## Latest candidate snapshot: hybrid split profile at prompt v22
 
-The final production-profile report is
+The current submission report is
+[`submission-final-v22`](../evals/reports/submission-final-v22/matrix/rollup.json).
+It uses prompt `v22`, retrieval `v12`, evaluation protocol `v13`, and profile
+`split-gpt-5.4-hybrid`, over **three repeats** of the seven official cases (21 case-runs):
+
+| Measure | Result |
+| --- | ---: |
+| Strict contract, per repeat | 6/7, 6/7, 6/7 |
+| Strict contract, pooled | 18/21 (0.8571) |
+| Exact content | 0.75 over 12 applicable case-runs |
+| Evidence contract | 0.9048 over 21 |
+| Operations contract | 1.0 over 21 |
+| Safety | N/A (0 applicable) |
+| Tool / model calls | 89 / 92 (4.24 and 4.38 per case) |
+| Retrieval rounds | 1.19 mean, 2 max |
+| Tokens | 513,333 in / 31,614 out (25,950 per case) |
+| Lexical macro | 0.6130 |
+| Diagnostic retrieval / citation coverage | 0.8571 / 0.8095 |
+| Latency p50 / p95 / max | 10,376 ms / 20,785 ms / 24,391 ms |
+| Answer length p50 | 123 words |
+| Budget-exceeded cases | 0 |
+| Flaky contract cases | none |
+
+`always_contract_fail_case_ids` is `official-blueharbor-defection-risk` and nothing else. That case
+fails through **two different modes** across repeats, which the pooled check rates make visible:
+
+- `exact_dates` at 0.5, when it answers but drops a committed milestone date;
+- `answerability_behavior` at 0.9048, i.e. two of 21 case-runs abstained outright, both on this
+  case.
+
+Its lexical coverage is 0.0769, far below every other case. This is a retrieval/selection problem
+on a case whose assignment reference the corpus also contradicts (see the two-axis rule above), not
+a formatting problem.
+
+Run command:
+
+```bash
+uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
+  --repeats 3 --env-file .env.local --output-dir evals/reports/submission-final-v22
+```
+
+`answers.json` in the same directory is a separate single-repeat `run` capturing full answer text,
+because the `matrix` report intentionally stores metrics rather than generated prose.
+
+The report is `semantic_quality: not_judged`.
+
+### Repeats are required before accepting a prompt change
+
+Single-repeat runs cannot distinguish a real improvement from live-model variance, and this was not
+a theoretical concern. The first prompt-`v22` attempt scored 6/7 on a single repeat and looked like
+a clean pass. Three repeats scored 6/7, 6/7, 5/7 and flagged `official-canada-approval-pattern` as
+flaky, which is what exposed the regression described in
+[Evaluation findings](evaluation-findings.md#answer-presentation-investigation-v20-v22).
+
+The working rule is therefore:
+
+1. a single repeat may screen an idea out, but may not accept it;
+2. any candidate that will ship runs at least three repeats;
+3. `flaky_contract_case_ids` must be empty, not merely small;
+4. compare `per_repeat_strict_contract_rate` rather than one pooled number, since one bad repeat is
+   averaged away by pooling;
+5. inspect the failing trace before changing anything.
+
+Three repeats of seven cases is still a small sample. It detects gross instability, not a reliable
+production accuracy rate.
+
+### Prompt version history on this profile
+
+| Prompt | Change | Outcome |
+| --- | --- | --- |
+| `v19` | Typed semantic planner decision replacing a keyword ranking gate | 6/7 strict, 1 repeat |
+| `v20` | Backticked commands, full milestone date chains, comparison disambiguation when several entities share a keyword | Kept 6/7 |
+| `v21` | Planner rule so continue/retry/resume uses the earlier question from labelled thread context | Kept 6/7; fixes a Slack behavior not covered by the official suite |
+| `v22` (first attempt) | Presentation rules plus a verifier gate rejecting drafts that expose retrieval internals | 6/7, 6/7, 5/7; Canada case became flaky |
+| `v22` (shipped) | Same presentation rules, verifier gate removed | 6/7, 6/7, 6/7; zero flaky |
+
+Only the presentation layer changed between v19 and v22. Retrieval stayed at `v12` throughout, so
+the unchanged `official-blueharbor-defection-risk` failure is expected: nothing in these prompt
+revisions targeted its retrieval gap.
+
+### Controlled budget-only follow-up experiment (not a new baseline)
+
+A separate profile keeps this exact snapshot setup and changes only:
+
+- `max_retrieval_rounds: 3`
+- `max_tool_calls: 10`
+
+Profile:
+`split-gpt-5.4-hybrid-budget3-tools10` (`experiment-budget3-hybrid-20260830-initial/official3.json`).
+
+- `official-blueharbor-defection-risk`: strict ❌ (insufficient-evidence, `exact_dates` failed), retrieval
+  rounds `3`, tool calls `7`, latency `33,558 ms`.
+- `official-canada-approval-pattern`: strict ❌ (`required_customer_recall` failed), retrieval rounds `3`,
+  tool calls `7`, latency `27,884 ms`.
+- `official-na-west-account-groups`: strict ✅, retrieval rounds `1`, tool calls `5`, latency `16,556 ms`.
+
+Strict on this 3-case slice: `1/3`.
+
+This was intentionally aborted before any full-suite rerun because the controlled prefix requirement
+("if first 3 are all good, then run 7") was not met.
+
+## Historical deterministic snapshot
+
+The earlier take-home candidate report is
 [`takehome-agent-p19-r12-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p19-r12-e13-final-20260829-01.json).
 It records prompt `v19`, retrieval `v12`, evaluation protocol `v13`, and profile
 `balanced-gpt-4.1-mini`:
@@ -98,24 +201,31 @@ prompt-`v16`/retrieval-`v9` run was rejected after a 5/7 strict regression.
 
 ## Commands and authorization
 
-The minimal take-home evidence is one official deterministic run plus manual review:
+The accepted evidence for a shipping change is a three-repeat matrix on the production profile plus
+manual review. Use `run` when the generated answer text itself is the artifact you need:
 
 ```bash
+uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
+  --repeats 3 --env-file .env.local --output-dir evals/reports/<label>
 uv run python -m knowledge_assistant.evals run --suite full \
-  --profile balanced-gpt-4.1-mini --env-file .env.local \
-  --output evals/reports/full-balanced-gpt-4.1-mini.json
+  --profile split-gpt-5.4-hybrid --env-file .env.local \
+  --output evals/reports/<label>/answers.json
 ```
 
-No matching p19/r12 derived or multi-turn regression run has been measured. These candidate-authored
+`run` refuses to overwrite an existing report path, so a rerun needs a new filename. That is
+deliberate: it prevents an experiment from silently replacing the artifact it is being compared
+against.
+
+No matching p22/r12 derived or multi-turn regression run has been measured. These candidate-authored
 suites are the next broader checks, not hidden held-out proof:
 
 ```bash
 uv run python -m knowledge_assistant.evals run --suite derived \
-  --profile balanced-gpt-4.1-mini --env-file .env.local \
-  --output evals/reports/derived-balanced-gpt-4.1-mini.json
+  --profile split-gpt-5.4-hybrid --env-file .env.local \
+  --output evals/reports/derived-split-gpt-5.4-hybrid.json
 uv run python -m knowledge_assistant.evals run --suite multiturn \
-  --profile balanced-gpt-4.1-mini --env-file .env.local \
-  --output evals/reports/multiturn-balanced-gpt-4.1-mini.json
+  --profile split-gpt-5.4-hybrid --env-file .env.local \
+  --output evals/reports/multiturn-split-gpt-5.4-hybrid.json
 ```
 
 Use a model judge only for semantic properties that deterministic checks cannot assess, and only
@@ -123,7 +233,7 @@ after explicit authorization for sending generated answers and references:
 
 ```bash
 uv run python -m knowledge_assistant.evals judge --label authorized-finalists --suite full \
-  --profiles balanced-gpt-4.1-mini --judge-model gpt-5 \
+  --profiles split-gpt-5.4-hybrid --judge-model gpt-5 \
   --env-file .env.local --confirm-data-transfer
 ```
 
