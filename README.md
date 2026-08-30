@@ -235,10 +235,13 @@ Langfuse. Exit code zero means the run completed and wrote a valid report; it do
 answer or deterministic gate passed.
 
 The final recorded deterministic snapshot is
-[`takehome-agent-p17-r10-e13-final-20260829-01.json`](evals/reports/takehome-agent-p17-r10-e13-final-20260829-01.json).
-It uses prompt `v17`, retrieval `v10`, and evaluation protocol `v13`: 6/7 strict-contract cases,
-3/4 applicable exact-content cases, and `semantic_quality: not_judged`. See
-[Evaluation findings](docs/evaluation-findings.md) for the manual answer review and metric caveats.
+[`takehome-agent-p19-r12-e13-final-20260829-01.json`](evals/reports/takehome-agent-p19-r12-e13-final-20260829-01.json).
+It uses prompt `v19`, retrieval `v12`, and evaluation protocol `v13`: 6/7 strict-contract cases,
+3/4 applicable exact-content cases, 7/7 evidence and operation contracts, and
+`semantic_quality: not_judged`. Manual assignment-reference review found 5/7 fully complete,
+reference-agreeing answers, so the 7/7 target was not met. See
+[Evaluation findings](docs/evaluation-findings.md) for the case review and metric caveats. Matching
+p19/r12 derived and multi-turn regression runs have not been measured.
 
 ### Optional semantic evaluation: authorization required
 
@@ -252,9 +255,11 @@ uv run python -m knowledge_assistant.evals judge --label finalists --suite full 
   --env-file .env.local --confirm-data-transfer
 ```
 
-Judge output is a candidate-defined diagnostic, not an assignment pass threshold. The default
-take-home evidence is the official deterministic run plus manual review. Derived and multi-turn
-suites are limited regression checks, not held-out proof. See
+Judge output is a candidate-defined diagnostic, not an assignment pass threshold. Future judge
+protocol-v5 reports record the explicit transfer acknowledgement and combine semantic answer
+quality with the strict deterministic contract in `task_quality_passed`. The default take-home
+evidence is the official deterministic run plus manual review. Derived and multi-turn suites are
+candidate-authored regression checks, not held-out proof. See
 [Evaluation strategy](docs/evaluations.md) for the complete policy and production evaluation plan.
 
 Every `evals/reports/candidate-*` directory lacks documented authorization metadata and is

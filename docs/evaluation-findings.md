@@ -3,8 +3,8 @@
 ## Final deterministic snapshot
 
 The final report is
-[`takehome-agent-p17-r10-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p17-r10-e13-final-20260829-01.json).
-It uses `balanced-gpt-4.1-mini`, prompt `v17`, retrieval `v10`, and evaluation protocol `v13`.
+[`takehome-agent-p19-r12-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p19-r12-e13-final-20260829-01.json).
+It uses `balanced-gpt-4.1-mini`, prompt `v19`, retrieval `v12`, and evaluation protocol `v13`.
 
 | Measure | Result |
 | --- | ---: |
@@ -13,10 +13,10 @@ It uses `balanced-gpt-4.1-mini`, prompt `v17`, retrieval `v10`, and evaluation p
 | Evidence contract | 7/7 |
 | Operations contract | 7/7 |
 | Safety | N/A (0 applicable) |
-| Tool / model calls | 28 / 31 |
-| Agent tokens | 173,521 |
-| Estimated agent cost | $0.0767848 |
-| Latency p50 / p95 | 9,949 ms / 19,173 ms |
+| Tool / model calls | 32 / 32 |
+| Agent tokens | 191,893 |
+| Estimated agent cost | $0.084898 |
+| Latency p50 / p95 / max | 12,088 ms / 74,796 ms / 74,796 ms |
 
 The run completed successfully and wrote a valid report. That process outcome is not a quality pass,
 and the report explicitly says `semantic_quality: not_judged`. The evidence contract establishes
@@ -35,16 +35,25 @@ Changes are selected lexicographically:
 The assignment supplies no aggregate tolerance. The seven cases are too small to establish a
 production accuracy rate.
 
+Prompt v19/retrieval v12 retain the p18/r11 provenance and full-evidence safeguards, replace a
+keyword ranking gate with a typed semantic planner decision, and preserve more distinct comparison
+follow-up dimensions within the existing hard action budget. This removes dependence on a fixed
+ranking-keyword list rather than adding a seven-question branch; broader-suite generalization has
+not been measured. The official manual outcome stayed at 5/7. Calls, tokens, cost, and median latency
+fell versus p18/r11, while one 74,796 ms cohort case made tail latency much worse. Those differences
+do not compensate for the two unresolved answer-quality gaps or establish that p19 is better.
+
 ## Manual official-suite review
 
 - **BlueHarbor proof plan:** correct customer and complete proof plan, including duration,
-  mapping/weighting work, top-20 A/B test, and success threshold.
+  mapping/weighting work, top-20 A/B test, and success threshold. It is more verbose than needed.
 - **Verdant rollback:** correct approved window, exact rollback command, ruleset restoration, and
   invalidation-hook replay.
 - **MapleHarvest:** correct temporary mappings and workshop outputs, including alias mapping,
   migration milestones, signed schema, and `SI-SCHEMA-REG` destination.
 - **Aureum:** correctly identifies `department` and `businessUnit` and Jin's hot-reloadable
-  preprocessing fix, but omits the SCIM tracing component in the assignment reference.
+  preprocessing fix, but omits both SCIM tracing and approval latency from the assignment
+  reference.
 - **Defection risk:** selects Pioneer Freight from explicit NoiseGuard PoC, procurement-pressure,
   and remediation-milestone evidence, while the assignment reference names BlueHarbor. Treat this
   as assignment-reference failure plus corpus/ranking ambiguity, not an invented customer. Runtime
@@ -52,13 +61,19 @@ production accuracy rate.
 - **North America West:** returns all 12 accounts in the correct taxonomy/search and
   duplicate-action groups.
 - **Canada pattern:** finds all seven accounts and the shared migration/precedence/schema pattern.
-  The answer is correct but includes long caveats about details the question did not request.
+  The answer is overlong and includes caveats about details the question did not request.
 
-This manual review is the semantic interpretation for the take-home. It is not an LLM-judge score
-and does not remove normal live-model variance.
+Five of seven answers were fully complete and reference-agreeing. Aureum was incomplete and the
+defection answer did not agree with the assignment reference, so the explicit 7/7 target was not
+met. This manual review is the semantic interpretation for the take-home. It is not an LLM-judge
+score and does not remove normal live-model variance.
 
 ## Experiment history
 
+- [`takehome-agent-p18-r11-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p18-r11-e13-final-20260829-01.json)
+  is a historical prompt-`v18`/retrieval-`v11` snapshot at 6/7 strict.
+- [`takehome-agent-p17-r10-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p17-r10-e13-final-20260829-01.json)
+  is a historical prompt-`v17`/retrieval-`v10` snapshot at 6/7 strict.
 - [`takehome-agent-p16-r9-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p16-r9-e13-final-20260829-01.json)
   is a rejected prompt-`v16`/retrieval-`v9` regression at 5/7 strict.
 - [`takehome-agent-p15-r8-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p15-r8-e13-final-20260829-01.json)
@@ -73,9 +88,9 @@ evidence.
 
 ## Take-home versus production
 
-For this take-home, the official deterministic run plus manual review is proportionate. Derived and
-multi-turn suites provide limited candidate-authored regression coverage, not independent held-out
-proof.
+For this take-home, the official deterministic run plus manual review is proportionate. Matching
+p19/r12 derived and multi-turn regression runs were not measured. Those suites are
+candidate-authored and would provide broader regression coverage, not independent held-out proof.
 
 Production requires representative and held-out cases, deterministic checks where possible,
 human-calibrated model judging only for semantic properties deterministic checks cannot measure,

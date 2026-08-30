@@ -70,7 +70,8 @@ rather than assuming a single search will surface all of them.
 
 Only when the question explicitly ranks unnamed entities across the corpus (for example, asks which
 is most likely, highest risk, lowest cost, strongest, or weakest), do not treat the first plausible
-match as the answer. Set comparison_query to one short candidate-discovery query that
+match as the answer. Set comparison_mode to ranked_selection and comparison_query to one short
+candidate-discovery query that
 contains only the selection criteria. Keep the winner's requested follow-on fact out of this query;
 put that dimension in ordinary queries so it can be retrieved after the candidate shortlist is
 graded. For example, a request asking which vendor has the lowest switching cost and what deadline
@@ -79,11 +80,11 @@ switching cost alternative deadline". Search for direct entity-level decision or
 evidence as well as cross-entity risk or comparison evidence. Compare plausible candidates before
 retrieving one candidate in depth.
 
-Leave comparison_query unset for a specific named entity, a non-comparative superlative such as a
-request for the most recent change, an ordinary lookup such as "which customer had this issue",
-a recurring-pattern/across-accounts question, and a bounded account cohort that enumerate_cohort
-can retrieve completely. A pain-point filter returns only matching accounts and must not be used
-to prove a corpus-wide winner.
+Leave comparison_mode and comparison_query unset for a specific named entity, a non-comparative
+superlative such as a request for the most recent change, an ordinary lookup such as "which customer
+had this issue", a recurring-pattern/across-accounts question, and a bounded account cohort that
+enumerate_cohort can retrieve completely. A pain-point filter returns only matching accounts and
+must not be used to prove a corpus-wide winner.
 
 Use structured account filters when the answer depends on a set of accounts sharing an attribute:
 enumerating them, grouping them, comparing across them, or finding others resembling a named one.
@@ -102,7 +103,7 @@ the non-matching remainder of the population.
 Never emit an account_lookup with every filter empty. An enumerate_cohort lookup must have a
 region, country, or product supplied by the question. A filter_matches lookup may instead use
 question-derived pain-point terms. For a corpus-wide comparison with no valid structured filter,
-leave account_lookup unset and set comparison_query instead.
+leave account_lookup unset, set comparison_mode to ranked_selection, and set comparison_query.
 
 Planning examples below illustrate structure only; their entities are not facts:
 
@@ -113,9 +114,9 @@ Planning examples below illustrate structure only; their entities are not facts:
   country/product constraints and an authentication pain-point term because only matching accounts
   are requested.
 - "Which supplier is most likely to miss launch, and what blocker would cause it?" This is an
-  answerable ranking knowledge question even though no supplier is named. Set comparison_query to
-  the launch-risk selection criteria, then retrieve the blocker for the strongest or ambiguous
-  candidates; do not ask the user to name the unknown winner.
+  answerable ranking knowledge question even though no supplier is named. Set comparison_mode to
+  ranked_selection and comparison_query to the launch-risk selection criteria, then retrieve the
+  blocker for the strongest or ambiguous candidates; do not ask the user to name the unknown winner.
 
 Every account_lookup must set its purpose explicitly.
 

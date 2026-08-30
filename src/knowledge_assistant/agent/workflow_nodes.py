@@ -45,19 +45,10 @@ from knowledge_assistant.retrieval.models import (
 
 MAX_INITIAL_QUERIES = 3
 MAX_REFINED_QUERIES = 2
+MAX_COMPARISON_REFINED_QUERIES = MAX_INITIAL_QUERIES + MAX_REFINED_QUERIES + 1
 MAX_EVIDENCE_PAYLOAD_CHARS = 32_000
 MAX_EVIDENCE_QUESTION_PART_CHARS = 1_000
 MAX_GROUNDING_ISSUE_CHARS = 1_000
-_RANKED_SELECTION_QUESTION = re.compile(
-    r"\b(?:most|least)\s+(?:likely|at\s+risk|probable|promising)\b"
-    r"|\b(?:highest|lowest|greatest|smallest|strongest|weakest)\b"
-    r"|\b(?:riskiest|safest|cheapest|costliest|largest|fastest|slowest)\b"
-    r"|\btop\s+(?:[\w-]+\s+){0,3}(?:candidate|customer|account|vendor|supplier|risk)\b"
-    r"|\b(?:rank|ranking)\b"
-    r"|\b(?:which|who)\b.{0,120}\b(?:best|worst|better|worse)\b"
-    r"|\b(?:which|who)\b.{0,120}\b(?:more|less)\s+likely\b",
-    flags=re.IGNORECASE,
-)
 INSUFFICIENT_EVIDENCE_ANSWER = "I couldn't answer this from the knowledge base."
 GREETING_ANSWER = (
     "Hi! I can answer questions grounded in the internal knowledge base. "
@@ -142,6 +133,7 @@ class StandaloneQuestion(BaseModel):
 class RetrievalPlan(BaseModel):
     disposition: QuestionDisposition
     show_sources: bool = False
+    comparison_mode: Literal["ranked_selection"] | None = None
     comparison_query: SearchQueryText | None = None
     response_mode: Literal["answer", "sources_only"] = "answer"
     queries: list[SearchQueryText] = Field(default_factory=list, max_length=MAX_INITIAL_QUERIES)
@@ -194,6 +186,8 @@ class RetrievalPlan(BaseModel):
 
     @model_validator(mode="after")
     def require_fields_for_disposition(self) -> RetrievalPlan:
+        if (self.comparison_mode is None) != (self.comparison_query is None):
+            raise ValueError("comparison mode and comparison query must be set together")
         if self.disposition is QuestionDisposition.KNOWLEDGE_QUESTION:
             if self.clarification_question is not None:
                 raise ValueError("knowledge questions cannot include a clarification question")
@@ -227,12 +221,6 @@ class RetrievalPlan(BaseModel):
         if self.response_mode != "answer":
             raise ValueError("only knowledge questions can change response mode")
         return self
-
-
-def _supports_comparison_shortlist(question: str) -> bool:
-    """Gate shortlist mode to explicit ranked selection, not every unknown-entity lookup."""
-
-    return _RANKED_SELECTION_QUESTION.search(question) is not None
 
 
 EvidenceQuestionPart = Annotated[
@@ -494,19 +482,26 @@ def _comparison_refinement_queries(
 ) -> list[str]:
     """Preserve planned follow-up dimensions and guarantee a full-evidence second pass."""
 
-    candidates = [*model_queries, *state.get("search_queries", [])]
+    candidates: list[str] = []
     comparison_query = state.get("comparison_query")
     if comparison_query is not None:
         # Repeating the shortlist query with the ordinary evidence purpose is intentional: the
         # second pass reads full artifacts instead of retaining search-only excerpts.
         candidates.append(comparison_query)
 
+    planned_queries = state.get("search_queries", [])
+    for index in range(max(len(model_queries), len(planned_queries))):
+        if index < len(model_queries):
+            candidates.append(model_queries[index])
+        if index < len(planned_queries):
+            candidates.append(planned_queries[index])
+
     queries: list[str] = []
     for candidate in candidates:
         normalized = " ".join(candidate.split())[:MAX_SEARCH_QUERY_CHARS]
         if normalized and normalized not in queries:
             queries.append(normalized)
-        if len(queries) == MAX_REFINED_QUERIES:
+        if len(queries) == MAX_COMPARISON_REFINED_QUERIES:
             break
     return queries
 
@@ -828,12 +823,7 @@ class GroundedAnswerNodes:
                 input_tokens=invocation_update.get("input_tokens"),
                 output_tokens=invocation_update.get("output_tokens"),
             )
-        comparison_query = (
-            parsed.comparison_query
-            if parsed.comparison_query is not None
-            and _supports_comparison_shortlist(standalone_question)
-            else None
-        )
+        comparison_query = parsed.comparison_query
         planned_account_lookup = parsed.account_lookup
         if comparison_query is not None and planned_account_lookup is not None:
             if planned_account_lookup.purpose == "enumerate_cohort":
@@ -974,7 +964,11 @@ class GroundedAnswerNodes:
             search_query_cap = (
                 self._profile.max_initial_queries
                 if state.get("retrieval_round_count", 0) == 0
-                else self._profile.max_refined_queries
+                else (
+                    MAX_COMPARISON_REFINED_QUERIES
+                    if comparison_query is not None
+                    else self._profile.max_refined_queries
+                )
             )
             # Reserve one tool call to read full artifacts whenever lexical search can run.
             search_query_limit = (

@@ -12,10 +12,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from knowledge_assistant.integrations.slack.routing import SlackRoutingPolicy
 
 APPLICATION_VERSION = "0.1.0"
-PROMPT_VERSION = "v18"
-# v11 exposes shortlist provenance to grading and forces a full-evidence comparison refinement.
-# Ordinary unknown-entity lookup and structured cohort retrieval retain their established paths.
-RETRIEVAL_VERSION = "v11"
+PROMPT_VERSION = "v19"
+# v12 uses the structured planner for semantic ranking intent and preserves every bounded
+# comparison-refinement query while keeping the existing hard tool-call limit authoritative.
+RETRIEVAL_VERSION = "v12"
 SETTINGS_CONFIG = SettingsConfigDict(
     env_file=".env",
     env_file_encoding="utf-8",

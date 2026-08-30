@@ -21,7 +21,6 @@ from knowledge_assistant.agent.workflow_nodes import (
     RetrievalPlan,
     StandaloneQuestion,
     StructuredOutputValidationError,
-    _supports_comparison_shortlist,
 )
 from knowledge_assistant.retrieval.models import MAX_SEARCH_QUERY_CHARS
 
@@ -101,6 +100,7 @@ async def test_corpus_wide_ranking_uses_lexical_comparison_without_unbounded_acc
         return_value=RetrievalPlan.model_validate(
             {
                 "disposition": "knowledge_question",
+                "comparison_mode": "ranked_selection",
                 "comparison_query": "supplier launch risk",
                 "queries": ["supplier milestone details", "tactical alternative"],
                 "account_lookup": {
@@ -116,8 +116,8 @@ async def test_corpus_wide_ranking_uses_lexical_comparison_without_unbounded_acc
     nodes = _nodes(model)
     state: AgentState = {
         "agent_run_id": "run-ranking",
-        "question": "Which supplier is most likely to miss launch?",
-        "standalone_question": "Which supplier is most likely to miss launch?",
+        "question": "Which supplier will probably miss launch?",
+        "standalone_question": "Which supplier will probably miss launch?",
         "question_disposition": QuestionDisposition.KNOWLEDGE_QUESTION,
         "history": [],
         "model_call_count": 0,
@@ -145,6 +145,7 @@ async def test_bounded_cohort_comparison_retains_structured_account_lookup() -> 
         return_value=RetrievalPlan.model_validate(
             {
                 "disposition": "knowledge_question",
+                "comparison_mode": "ranked_selection",
                 "comparison_query": "EMEA Relay issue comparison",
                 "queries": ["EMEA Relay account issues"],
                 "account_lookup": account_lookup,
@@ -178,28 +179,21 @@ def test_source_only_plan_rejects_a_comparison_query() -> None:
         RetrievalPlan(
             disposition=QuestionDisposition.KNOWLEDGE_QUESTION,
             response_mode="sources_only",
+            comparison_mode="ranked_selection",
             comparison_query="supplier launch risk",
         )
 
 
 @pytest.mark.parametrize(
-    ("question", "expected"),
+    "plan",
     [
-        ("Which supplier is most likely to miss launch?", True),
-        ("Who is the riskiest supplier?", True),
-        ("Which vendor is the cheapest option?", True),
-        ("What account has the largest exposure?", True),
-        ("Who is the top churn candidate?", True),
-        ("Which customer had the outage and what was the fix?", False),
-        ("What is the most recent configuration change?", False),
-        ("Is this pattern recurring across customers or a one-off?", False),
+        {"comparison_query": "supplier launch risk"},
+        {"comparison_mode": "ranked_selection", "queries": ["supplier launch risk"]},
     ],
 )
-def test_comparison_shortlist_requires_explicit_ranked_selection(
-    question: str,
-    expected: bool,
-) -> None:
-    assert _supports_comparison_shortlist(question) is expected
+def test_comparison_mode_and_query_must_be_set_together(plan: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="comparison mode and comparison query"):
+        RetrievalPlan(disposition=QuestionDisposition.KNOWLEDGE_QUESTION, **plan)
 
 
 async def test_recurring_pattern_lookup_keeps_structured_filter_instead_of_shortlist() -> None:
@@ -208,7 +202,6 @@ async def test_recurring_pattern_lookup_keeps_structured_filter_instead_of_short
         return_value=RetrievalPlan.model_validate(
             {
                 "disposition": "knowledge_question",
-                "comparison_query": "regional approval bypass pattern",
                 "queries": ["regional approval precedence migration"],
                 "account_lookup": {
                     "purpose": "filter_matches",

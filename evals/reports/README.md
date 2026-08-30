@@ -7,8 +7,8 @@ not provider bodies or credentials. New runs use unique names and are never over
 
 ## Final deterministic report
 
-[`takehome-agent-p17-r10-e13-final-20260829-01.json`](takehome-agent-p17-r10-e13-final-20260829-01.json)
-is the final production-profile snapshot: prompt `v17`, retrieval `v10`, evaluation protocol `v13`,
+[`takehome-agent-p19-r12-e13-final-20260829-01.json`](takehome-agent-p19-r12-e13-final-20260829-01.json)
+is the final production-profile snapshot: prompt `v19`, retrieval `v12`, evaluation protocol `v13`,
 and `balanced-gpt-4.1-mini`.
 
 - strict contract: 6/7;
@@ -16,9 +16,9 @@ and `balanced-gpt-4.1-mini`.
 - evidence contract: 7/7;
 - operations contract: 7/7;
 - safety: N/A, with zero applicable cases;
-- 28 tool calls, 31 model calls, and 173,521 agent tokens;
-- estimated agent cost: $0.0767848;
-- latency: 9,949 ms p50 and 19,173 ms p95/max; and
+- 32 tool calls, 32 model calls, and 191,893 agent tokens;
+- estimated agent cost: $0.084898;
+- latency: 12,088 ms p50 and 74,796 ms p95/max; and
 - `semantic_quality: not_judged`.
 
 Exit code zero means the run completed and wrote this report, not that every gate or answer passed.
@@ -26,8 +26,17 @@ The evidence contract checks source attribution, citation membership/integrity, 
 behavior. It does not prove claim-level entailment. Curated source IDs and lexical anchors are
 candidate-authored diagnostics, not assignment gold.
 
+Manual assignment-reference review found 5/7 fully complete, reference-agreeing answers, so the
+7/7 target was not met. Prompt v19/retrieval v12 retain the p18/r11 provenance and full-evidence
+safeguards, replace a keyword ranking gate with typed semantic planning, and preserve more distinct
+comparison follow-up dimensions within the hard budget. They did not improve the manual outcome.
+Calls, tokens, cost, and median latency fell, but one slow cohort case caused a large tail-latency
+regression. Matching p19/r12 derived and multi-turn regressions were not measured.
+
 ## Experiment history
 
+- `takehome-agent-p18-r11-e13-final-20260829-01.json` is a historical 6/7 strict snapshot.
+- `takehome-agent-p17-r10-e13-final-20260829-01.json` is a historical 6/7 strict snapshot.
 - `takehome-agent-p16-r9-e13-final-20260829-01.json` is a rejected 5/7 strict regression.
 - `takehome-agent-p15-r8-e13-final-20260829-01.json` is a historical 6/7 strict snapshot.
 - Other mixed-version completed and failed reports remain audit history, not final comparisons.
@@ -48,5 +57,6 @@ metadata. The eight non-empty directories currently preserved are:
 Preserve them for audit, do not quote their rates, and do not use them as submission evidence.
 
 Any future judge command must be run only with explicit authorization and must include
-`--confirm-data-transfer`. Offline evaluation deliberately disables Langfuse even when its keys are
-present.
+`--confirm-data-transfer`. Judge protocol v5 then records `data_transfer_acknowledged: true` and
+reports combined semantic-plus-strict `task_quality_passed` diagnostics. Offline evaluation
+deliberately disables Langfuse even when its keys are present.

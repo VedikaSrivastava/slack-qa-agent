@@ -66,8 +66,8 @@ it is not a quality pass.
 ## Final take-home snapshot
 
 The final production-profile report is
-[`takehome-agent-p17-r10-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p17-r10-e13-final-20260829-01.json).
-It records prompt `v17`, retrieval `v10`, evaluation protocol `v13`, and profile
+[`takehome-agent-p19-r12-e13-final-20260829-01.json`](../evals/reports/takehome-agent-p19-r12-e13-final-20260829-01.json).
+It records prompt `v19`, retrieval `v12`, evaluation protocol `v13`, and profile
 `balanced-gpt-4.1-mini`:
 
 - strict contract: 6/7;
@@ -75,14 +75,26 @@ It records prompt `v17`, retrieval `v10`, evaluation protocol `v13`, and profile
 - evidence contract: 7/7;
 - operation contract: 7/7;
 - safety: not applicable, with zero declared safety cases;
-- 28 tool calls and 31 model calls;
-- 173,521 total agent tokens and estimated agent cost of $0.0767848; and
-- latency of 9,949 ms p50 and 19,173 ms p95/max.
+- 32 tool calls and 32 model calls;
+- 191,893 total agent tokens and estimated agent cost of $0.084898; and
+- latency of 12,088 ms p50 and 74,796 ms p95/max.
 
 The report is `semantic_quality: not_judged`. Interpret it with the manual case review in
-[Evaluation findings](evaluation-findings.md). The prompt-`v16`/retrieval-`v9` run was rejected after
-a 5/7 strict regression. The prompt-`v15`/retrieval-`v8` 6/7 run remains historical evidence, not
-the final snapshot.
+[Evaluation findings](evaluation-findings.md). Manual assignment-reference review found 5/7 fully
+complete, reference-agreeing answers, so the 7/7 target was not met.
+
+Prompt v19/retrieval v12 retain search-excerpt, customer, and scenario provenance in the grading and
+answer stages, require full evidence before ranked selection, replace a keyword ranking gate with a
+typed semantic planner decision, and preserve more comparison follow-up dimensions within the hard
+action budget. This removes dependence on a fixed ranking-keyword list, but no matching broader
+suite has measured generalization and official reference agreement did not improve. Calls, tokens,
+cost, and median latency fell versus p18/r11, while a single slow cohort case caused a large
+tail-latency regression. Correctness and completeness remain the selection objective; these
+run-to-run differences are secondary diagnostics and do not establish that p19 is better.
+
+The prompt-`v18`/retrieval-`v11`, prompt-`v17`/retrieval-`v10`, and
+prompt-`v15`/retrieval-`v8` runs remain historical 6/7 strict evidence. The
+prompt-`v16`/retrieval-`v9` run was rejected after a 5/7 strict regression.
 
 ## Commands and authorization
 
@@ -94,8 +106,8 @@ uv run python -m knowledge_assistant.evals run --suite full \
   --output evals/reports/full-balanced-gpt-4.1-mini.json
 ```
 
-Derived and multi-turn runs are limited regression checks. They are candidate-authored and tuned,
-not hidden held-out proof:
+No matching p19/r12 derived or multi-turn regression run has been measured. These candidate-authored
+suites are the next broader checks, not hidden held-out proof:
 
 ```bash
 uv run python -m knowledge_assistant.evals run --suite derived \
@@ -114,6 +126,11 @@ uv run python -m knowledge_assistant.evals judge --label authorized-finalists --
   --profiles balanced-gpt-4.1-mini --judge-model gpt-5 \
   --env-file .env.local --confirm-data-transfer
 ```
+
+Judge protocol v5 records `data_transfer_acknowledged: true` only after that CLI confirmation. It
+also reports `task_quality_passed` per case and `task_quality_pass_rate` in aggregate, requiring both
+the candidate-defined semantic answer-quality gate and the strict deterministic contract. Those
+fields are future authorized diagnostics, not assignment-defined thresholds.
 
 Every `evals/reports/candidate-*` directory is unaccepted and outside the documented authorization
 because it contains judge output but no authorization metadata. Preserve these directories as audit

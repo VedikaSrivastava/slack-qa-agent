@@ -1,0 +1,1041 @@
+{
+  "status": "completed",
+  "suite": "full",
+  "dataset_digest": "ac16383cd1ad83a28b5a5225e3f15ded8bf983425f6f6baa1e217f0fd456ee1c",
+  "annotation_digest": "9b1bdd0a7434bafd77d83776fc2c2d77cfbc755f0a21f8003d7c40de2e748578",
+  "evaluation_protocol_version": "v13",
+  "application_version": "0.1.0",
+  "prompt_version": "v19",
+  "retrieval_version": "v12",
+  "profile": {
+    "name": "balanced-gpt-4.1-mini",
+    "model_name": "gpt-4.1-mini",
+    "temperature": 0,
+    "max_history_turns": 6,
+    "max_initial_queries": 3,
+    "max_refined_queries": 2,
+    "search_limit": 5,
+    "max_artifacts": 16,
+    "max_retrieval_rounds": 2,
+    "max_tool_calls": 8,
+    "max_model_calls": 9,
+    "fts_candidate_multiplier": 6,
+    "fts_first_pass_results_per_scenario": 2,
+    "reasoning_effort": null,
+    "answer_model_name": null,
+    "router_model_name": null
+  },
+  "strict_contract_passed": false,
+  "semantic_quality": "not_judged",
+  "case_count": 7,
+  "metrics": {
+    "case_count": 7,
+    "strict_contract_pass_rate": 0.8571428571428571,
+    "scope_pass_rates": {
+      "content_exact": 0.75,
+      "evidence": 1.0,
+      "operations": 1.0,
+      "safety": null
+    },
+    "scope_applicable_case_counts": {
+      "content_exact": 4,
+      "evidence": 7,
+      "operations": 7,
+      "safety": 0
+    },
+    "check_pass_rates": {
+      "answerability_behavior": 1.0,
+      "citation_integrity": 1.0,
+      "diagnostic_citation_coverage": 0.7142857142857143,
+      "diagnostic_retrieval_coverage": 0.8571428571428571,
+      "exact_commands": 1.0,
+      "exact_dates": 0.5,
+      "lexical_entities": 0.8,
+      "lexical_fact_anchors": 0.0,
+      "required_customer_recall": 1.0,
+      "retrieval_round_budget": 1.0,
+      "source_attribution": 1.0,
+      "tool_call_budget": 1.0
+    },
+    "check_score_means": {
+      "diagnostic_citation_coverage": 0.7857142857142857,
+      "diagnostic_retrieval_coverage": 0.9047619047619048,
+      "exact_commands": 1.0,
+      "exact_dates": 0.75,
+      "lexical_entities": 0.8,
+      "lexical_fact_anchors": 0.5553462410605268,
+      "required_customer_recall": 1.0
+    },
+    "lexical_content_coverage": {
+      "macro_per_case": 0.6745486656200942,
+      "micro": 0.6951219512195121,
+      "by_group_micro": {
+        "commands": 1.0,
+        "customers": 1.0,
+        "dates": 0.6666666666666666,
+        "entities": 0.8,
+        "facts": 0.5740740740740741
+      },
+      "per_case": {
+        "official-blueharbor-proof-plan": 0.75,
+        "official-verdant-window-rollback": 0.5714285714285714,
+        "official-mapleharvest-mappings-workshop": 0.8571428571428571,
+        "official-aureum-scim-fix": 0.625,
+        "official-blueharbor-defection-risk": 0.23076923076923078,
+        "official-na-west-account-groups": 0.9375,
+        "official-canada-approval-pattern": 0.75
+      }
+    },
+    "diagnostic_source_coverage": {
+      "citation_mean": 0.7857142857142857,
+      "retrieval_mean": 0.9047619047619048
+    },
+    "per_case_contract": {
+      "official-blueharbor-proof-plan": true,
+      "official-verdant-window-rollback": true,
+      "official-mapleharvest-mappings-workshop": true,
+      "official-aureum-scim-fix": true,
+      "official-blueharbor-defection-risk": false,
+      "official-na-west-account-groups": true,
+      "official-canada-approval-pattern": true
+    },
+    "latency_ms": {
+      "p50": 12088.0,
+      "p95": 74796.0,
+      "p99": 74796.0,
+      "mean": 21104.14285714286,
+      "max": 74796.0
+    },
+    "tool_calls": {
+      "total": 32,
+      "mean_per_case": 4.571428571428571,
+      "max": 8
+    },
+    "model_calls": {
+      "total": 32,
+      "mean_per_case": 4.571428571428571,
+      "max": 5
+    },
+    "retrieval_rounds": {
+      "mean_per_case": 1.5714285714285714,
+      "max": 2
+    },
+    "tokens": {
+      "input_total": 185109,
+      "output_total": 6784,
+      "total": 191893,
+      "mean_total_per_case": 27413.285714285714
+    },
+    "cost_usd": {
+      "total": 0.084898,
+      "per_case": 0.012128285714285715,
+      "per_1k_cases": 12.128285714285715,
+      "method": "single-model",
+      "answer_model": "gpt-4.1-mini",
+      "prices_captured_at": "2026-08-29"
+    },
+    "answer_length": {
+      "chars_p50": 1354.0,
+      "chars_mean": 1426.4285714285713,
+      "chars_max": 2308.0,
+      "words_p50": 158.0,
+      "words_mean": 194.14285714285714,
+      "words_max": 334.0
+    },
+    "reliability": {
+      "strict_contract_passed_cases": 6,
+      "budget_exceeded_cases": 0,
+      "answerability_behavior_failed_cases": 0
+    }
+  },
+  "saved_at": "2026-08-30T01:14:57.341179+00:00",
+  "results": [
+    {
+      "case_id": "official-blueharbor-proof-plan",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.7142857142857143,
+          "is_gate": false,
+          "details": "missing: ['7-10 business day', 'update index weighting']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "The customer's issue that started after the 2026-02-20 taxonomy rollout is BlueHarbor Logistics. They reported search relevance degradation and increased manual triage time following the taxonomy change on 2026-02-20.\n\nThe proof plan proposed to get BlueHarbor Logistics comfortable with renewal involved a short-term mitigation consisting of updating index weighting and adding a translation/mapping layer to map new taxonomy terms to historical query tokens for the top 20 saved searches. The timeline included receiving schema registry export and query logs by 2026-03-19, starting an A/B test in staging on 2026-03-22 for 5 business days tuning plus 2 business days validation (7-10 business days total). The acceptance criteria were top-5 correct hit rate >= 80%, no regression in suppression logic, and incident correlation latency under 200ms.\n\nA 90-day professional services engagement was offered at $48k fixed price to implement the tuning, build the mapping layer, and run the proof, with a 30% discount if Orchestrator seat expansion was signed concurrently. Additionally, a conditional credit clause was proposed: if the proof does not meet the agreed top-5 accuracy uplift within 10 business days, a one-quarter invoice credit prorated against the renewal for the upcoming year would be applied.\n\nThe proof plan also included compatibility tests against existing EN-RULES-ENGINE automations to ensure no breakage, and a 1-day production rollout and 72-hour monitoring window if validation passed.\n\nNo other customer's issue starting after the 2026-02-20 taxonomy rollout or other proof plans for renewal comfort besides BlueHarbor Logistics are documented in the evidence [art_8b0063fbb3cb, art_0bccc580184e, art_bd3560dfe194, art_c9970c1dc932].",
+      "source_ids": [
+        "art_8b0063fbb3cb",
+        "art_0bccc580184e",
+        "art_bd3560dfe194",
+        "art_c9970c1dc932"
+      ],
+      "retrieved_artifact_ids": [
+        "art_8b0063fbb3cb",
+        "art_0bccc580184e",
+        "art_bd3560dfe194",
+        "art_dfe108c90705",
+        "art_d57377f0810c",
+        "art_c9970c1dc932",
+        "art_e8b3e74e23b8",
+        "art_760df143a1e2"
+      ],
+      "show_sources": false,
+      "tool_call_count": 3,
+      "retrieval_round_count": 1,
+      "model_call_count": 4,
+      "input_tokens": 23794,
+      "output_tokens": 893,
+      "duration_ms": 12088,
+      "answer_chars": 1759,
+      "answer_words": 251,
+      "lexical_hits": {
+        "facts": {
+          "matched": 5,
+          "total": 7
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "official-verdant-window-rollback",
+      "strict_contract_passed": true,
+      "content_exact_passed": true,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.25,
+          "is_gate": false,
+          "details": "missing: ['customer approved', 'restores the prior ruleset', 'replays the invalidation hook']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "exact_dates",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "exact_commands",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "The approved live patch window for Verdant Bay is March 24, 2026, from 02:00 to 04:00 local time. If validation checks fail after deploying the patch, the rollback procedure is to run the command `orchestrator rollback --target ruleset=<prior_sha>`, which rehydrates the prior ruleset and replays the cache invalidation hook. After rollback, the steps include notifying Verdant Bay, opening an incident for manual remediation, and reverting any partial replays. Exact detailed step-by-step instructions beyond this command and post-rollback steps are not provided, nor are specific validation criteria beyond \"if any validation fails\" detailed in the evidence [art_fff67d92fe41].",
+      "source_ids": [
+        "art_fff67d92fe41"
+      ],
+      "retrieved_artifact_ids": [
+        "art_fff67d92fe41",
+        "art_f893faeda15a",
+        "art_1a35433cad7c",
+        "art_79f625aafa16",
+        "art_6b7a18706e8e",
+        "art_d57377f0810c",
+        "art_3162bf3bba31",
+        "art_a0ed9f935d3e"
+      ],
+      "show_sources": false,
+      "tool_call_count": 3,
+      "retrieval_round_count": 1,
+      "model_call_count": 4,
+      "input_tokens": 21869,
+      "output_tokens": 469,
+      "duration_ms": 6869,
+      "answer_chars": 679,
+      "answer_words": 96,
+      "lexical_hits": {
+        "facts": {
+          "matched": 1,
+          "total": 4
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        },
+        "dates": {
+          "matched": 1,
+          "total": 1
+        },
+        "commands": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "official-mapleharvest-mappings-workshop",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.8461538461538461,
+          "is_gate": false,
+          "details": "missing: ['integers', 'alias mappings']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": false,
+          "score": 0.5,
+          "is_gate": false,
+          "details": "missing candidate-curated IDs: ['art_6c5bb3a4b89f']"
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "In the MapleHarvest Quebec pilot, the temporary field mappings planned in the router transform include mapping txn_id to transaction_id, total_amount to amount_cents, applying type coercion from string to int, preserving key fields store_id and register_id, and adding a transformation flag field _ns_transform=true. This transform is to be deployed in SI-CLOUD-ROUTER as a temporary measure to address schema rejection issues caused by mixed field names and types from store-level preprocessing [art_5a91258f4056].\n\nThe March 23 workshop is a Schema Signoff Workshop with attendees including Sophie Tremblay, Marc Gauthier, Ellen Park, Platform engineers, and Northstar SE/Ing teams. The agenda is to agree on a canonical schema for payment, register_events, and sensor_thermo; define alias mapping; and plan producer migration. The deliverable is a signed schema document uploaded to SI-SCHEMA-REG and a change control ticket with producer migration milestones. The workshop duration is 90 minutes [art_5a91258f4056].",
+      "source_ids": [
+        "art_5a91258f4056"
+      ],
+      "retrieved_artifact_ids": [
+        "art_5a91258f4056",
+        "art_6c5bb3a4b89f",
+        "art_bb1a48244f1b",
+        "art_738af7130c81",
+        "art_6c9446a04e8d",
+        "art_1b759b7eabf8",
+        "art_5950781251ef",
+        "art_f84ee0a8f925"
+      ],
+      "show_sources": false,
+      "tool_call_count": 3,
+      "retrieval_round_count": 1,
+      "model_call_count": 4,
+      "input_tokens": 22981,
+      "output_tokens": 562,
+      "duration_ms": 7945,
+      "answer_chars": 1019,
+      "answer_words": 141,
+      "lexical_hits": {
+        "facts": {
+          "matched": 11,
+          "total": 13
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "official-aureum-scim-fix",
+      "strict_contract_passed": true,
+      "content_exact_passed": null,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.5714285714285714,
+          "is_gate": false,
+          "details": "missing: ['hot-reloadable', 'SCIM tracing', 'approval latency']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "The SCIM fields conflicting at Aureum were \"department\" and \"businessUnit.\" Merchant Services used \"businessUnit=merchant\" while Payments Ops used \"department=payments.\" This mismatch caused ingestion normalization to fail to collapse these into a single canonical attribute, leading the Rules Engine to fail matching on the entity tag used to route approvals [art_79f625aafa16].\n\nJin proposed a fast fix that involved adding a preprocessing rule in Signal Ingest to map \"businessUnit\" to \"department\" (or vice versa) and publish a normalized field for the correlator. This fix is a configuration-only change that can be hot-reloaded, thus avoiding the need to wait for Okta change control, which could take 2 to 4 weeks [art_79f625aafa16].\n\nDetails of the exact configuration steps or rule syntax for the preprocessing rule were not provided in the evidence, and no additional fast fixes beyond this preprocessing rule were described [art_79f625aafa16].",
+      "source_ids": [
+        "art_79f625aafa16"
+      ],
+      "retrieved_artifact_ids": [
+        "art_545110f843dc",
+        "art_79f625aafa16",
+        "art_fb836b38496a",
+        "art_981952a71434",
+        "art_229ec90559fb",
+        "art_e408968fe032",
+        "art_9d3bef4ff8f4",
+        "art_948a65eb617b",
+        "art_240e7f054e1a",
+        "art_5ccab0fec154",
+        "art_360fbceaca6a"
+      ],
+      "show_sources": false,
+      "tool_call_count": 7,
+      "retrieval_round_count": 2,
+      "model_call_count": 5,
+      "input_tokens": 29807,
+      "output_tokens": 894,
+      "duration_ms": 11859,
+      "answer_chars": 954,
+      "answer_words": 139,
+      "lexical_hits": {
+        "facts": {
+          "matched": 4,
+          "total": 7
+        },
+        "entities": {
+          "matched": 1,
+          "total": 1
+        }
+      }
+    },
+    {
+      "case_id": "official-blueharbor-defection-risk",
+      "strict_contract_passed": false,
+      "content_exact_passed": false,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.2,
+          "is_gate": false,
+          "details": "missing: ['7-10 business day', 'schema export', '14 days of query logs', 'A/B test', 'top-5 correct hit rate', '80 percent', 'top 20 saved searches', 'no suppression regression']"
+        },
+        {
+          "name": "lexical_entities",
+          "scope": "content",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing: ['BlueHarbor Logistics']"
+        },
+        {
+          "name": "exact_dates",
+          "scope": "content",
+          "passed": false,
+          "score": 0.5,
+          "is_gate": true,
+          "details": "missing: ['2026-03-19']"
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": false,
+          "score": 0.0,
+          "is_gate": false,
+          "details": "missing candidate-curated IDs: ['art_0bccc580184e', 'art_bd3560dfe194', 'art_c9970c1dc932']"
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": false,
+          "score": 0.3333333333333333,
+          "is_gate": false,
+          "details": "missing candidate-curated IDs: ['art_0bccc580184e', 'art_bd3560dfe194']"
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "The customer most likely to defect to a cheaper tactical competitor if the next promised milestone is missed is Pioneer Freight Solutions. This is because they are running a tactical proof of concept (PoC) of NoiseGuard, a competitor positioned as a low-mid pricing tactical noise reduction tool. There is a high retention risk if Northstar misses acceptance milestones, as procurement is likely to extend NoiseGuard and reduce Northstar's scope. This risk is explicitly noted in the competitor report for Pioneer Freight Solutions.\n\nThe exact next promised milestone for Pioneer Freight Solutions is the verification of schema registry compatibility and collection of the taxonomy snapshot, due on 2026-03-22. This milestone is part of the agreed remediation plan to address the taxonomy change incident impacting search relevance and entity graph linking.\n\nAdditional context includes subsequent milestones such as building a shadow index (2026-03-29 to 2026-04-09), backfill enrichment and recompute index weights (2026-04-12 to 2026-04-30), and a validation window (2026-05-01 to 2026-05-14). However, the immediate next milestone is the schema registry verification and taxonomy snapshot collection due 2026-03-22.\n\nThe competitive risk is that NoiseGuard is perceived as a cheaper near-term fix, and if Northstar misses acceptance milestones, procurement may favor NoiseGuard, which is a tactical competitor with strengths in easy deployment and low operational overhead but weaknesses in deeper automation and compliance tooling that Northstar offers.\n\nNo evidence is available about other customers' likelihood to defect to cheaper tactical competitors if milestones are missed, so it cannot be confirmed if Pioneer Freight Solutions is uniquely the most likely. Also, no explicit ranking or comparison of likelihood to defect among customers is provided, so the assertion that Pioneer Freight Solutions is the most likely is based on the explicit risk statement but lacks comparative data. No direct evidence states the exact milestone that would trigger defection risk beyond the next promised milestone date and task; the criticality of this milestone relative to others is implied but not explicitly stated as the trigger for defection risk. [art_ac8afb52f2d3, art_7373b64fdfdd, art_79cf94421871]",
+      "source_ids": [
+        "art_ac8afb52f2d3",
+        "art_7373b64fdfdd",
+        "art_79cf94421871"
+      ],
+      "retrieved_artifact_ids": [
+        "art_ac8afb52f2d3",
+        "art_b50b72e5837c",
+        "art_4f1200ae5a1f",
+        "art_e2727db588de",
+        "art_e6d67dfd5f1a",
+        "art_c9970c1dc932",
+        "art_bf47226fbfc2",
+        "art_ba141dc7febd",
+        "art_7373b64fdfdd",
+        "art_79cf94421871",
+        "art_5c5f280b88fe",
+        "art_9ae897b5abc3"
+      ],
+      "show_sources": false,
+      "tool_call_count": 4,
+      "retrieval_round_count": 2,
+      "model_call_count": 5,
+      "input_tokens": 25525,
+      "output_tokens": 1383,
+      "duration_ms": 18454,
+      "answer_chars": 2308,
+      "answer_words": 334,
+      "lexical_hits": {
+        "facts": {
+          "matched": 2,
+          "total": 10
+        },
+        "entities": {
+          "matched": 0,
+          "total": 1
+        },
+        "dates": {
+          "matched": 1,
+          "total": 2
+        }
+      }
+    },
+    {
+      "case_id": "official-na-west-account-groups",
+      "strict_contract_passed": true,
+      "content_exact_passed": true,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.75,
+          "is_gate": false,
+          "details": "missing: ['workflow deduplication drift']"
+        },
+        {
+          "name": "required_customer_recall",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "Among the North America West Event Nexus accounts:\n\nAccounts dealing with taxonomy/search semantics problems are:\n- Arcadia Cloudworks\n- BlueHarbor Logistics\n- CedarWind Renewables\n- HelioFab Systems\n- Pacific Health Network\n- Pioneer Freight Solutions\n\nThese accounts report issues such as search relevance degradation after taxonomy changes, low-relevance or noisy search results, missed deduplication matches, and misfiring runbook triggers tied to taxonomy updates or schema mismatches.\n\nAccounts dealing with duplicate-action problems are:\n- Helix Assemblies Inc.\n- LedgerBright Analytics\n- LedgerPeak Software\n- MedLogix Distribution\n- Peregrine Logistics Group\n- Pioneer Grid Retail LLC\n\nThese accounts report issues such as duplicate incident executions, repeated remediation playbook runs, duplicate correlated incidents, paging storms, and idempotency key mismatches after post-acquisition systems consolidation or event bridge cutovers.\n\nNo explicit evidence identifies any North America West Event Nexus accounts that have both taxonomy/search semantics problems and duplicate-action problems simultaneously [art_90991e25335f, art_8b0063fbb3cb, art_10f7e8b72e09, art_9345d5653840, art_0ac4efa5a0ff, art_0ac4efa5a0ff, art_8478ccd5b200, art_2f780acc1f96, art_87b096c2c2d3, art_0927b1cbb7f4, art_4eccfd9dcf29, art_3ba29fe1e026, art_f64972a66eeb]",
+      "source_ids": [
+        "art_90991e25335f",
+        "art_8b0063fbb3cb",
+        "art_10f7e8b72e09",
+        "art_9345d5653840",
+        "art_0ac4efa5a0ff",
+        "art_8478ccd5b200",
+        "art_2f780acc1f96",
+        "art_87b096c2c2d3",
+        "art_4eccfd9dcf29",
+        "art_0927b1cbb7f4",
+        "art_3ba29fe1e026",
+        "art_f64972a66eeb"
+      ],
+      "retrieved_artifact_ids": [
+        "art_90991e25335f",
+        "art_8b0063fbb3cb",
+        "art_10f7e8b72e09",
+        "art_9345d5653840",
+        "art_0ac4efa5a0ff",
+        "art_8478ccd5b200",
+        "art_2f780acc1f96",
+        "art_87b096c2c2d3",
+        "art_4eccfd9dcf29",
+        "art_0927b1cbb7f4",
+        "art_3ba29fe1e026",
+        "art_f64972a66eeb",
+        "art_c9970c1dc932",
+        "art_d11447325b44",
+        "art_fb836b38496a",
+        "art_5af82e8d03df"
+      ],
+      "show_sources": false,
+      "tool_call_count": 4,
+      "retrieval_round_count": 2,
+      "model_call_count": 5,
+      "input_tokens": 27514,
+      "output_tokens": 1026,
+      "duration_ms": 74796,
+      "answer_chars": 1354,
+      "answer_words": 158,
+      "lexical_hits": {
+        "facts": {
+          "matched": 3,
+          "total": 4
+        },
+        "customers": {
+          "matched": 12,
+          "total": 12
+        }
+      }
+    },
+    {
+      "case_id": "official-canada-approval-pattern",
+      "strict_contract_passed": true,
+      "content_exact_passed": true,
+      "evidence_passed": true,
+      "operational_passed": true,
+      "safety_passed": null,
+      "checks": [
+        {
+          "name": "lexical_fact_anchors",
+          "scope": "content",
+          "passed": false,
+          "score": 0.5555555555555556,
+          "is_gate": false,
+          "details": "missing: ['stale caches', 'field alias', 'schema propagation', 'country-default']"
+        },
+        {
+          "name": "required_customer_recall",
+          "scope": "content",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "source_attribution",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "citation_integrity",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_citation_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "diagnostic_retrieval_coverage",
+          "scope": "diagnostic",
+          "passed": true,
+          "score": 1.0,
+          "is_gate": false,
+          "details": ""
+        },
+        {
+          "name": "tool_call_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "retrieval_round_budget",
+          "scope": "operations",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        },
+        {
+          "name": "answerability_behavior",
+          "scope": "evidence",
+          "passed": true,
+          "score": null,
+          "is_gate": true,
+          "details": ""
+        }
+      ],
+      "answer": "There is a recurring Canada approval-bypass pattern affecting multiple Canadian accounts after migration from legacy workflow tooling to the Orchestrator product, not just MapleBridge Insurance. The affected customers with this pattern are City of Verdant Bay, Maple Regional Transit Authority, MapleBay Marketplace, MapleBridge Insurance, MapleFork Franchise Systems, MaplePath Career Institute, and MapleWest Bank.\n\nThe shared failure pattern is that after migration, approval workflows for region-specific (Canada) policies fail due to incorrect rule evaluation precedence. Specifically, global-default rules are incorrectly overriding or bypassing Canada-specific or province-specific approval rules because of rule evaluation order bugs, schema normalization mismatches (such as 'country_code' vs 'country'), or delayed schema registry synchronization. This causes approval playbooks to skip approver nodes, approvals to be stuck or auto-denied, approvals routed to global approvers instead of Canada approvers, or Canada-specific approval gating to be bypassed.\n\nIn plain English: after migrating to the new approval system, the rules that should ensure Canadian-specific approvals are required are being overridden by more general global rules. This leads to approvals being bypassed or stuck, misrouted approvals, missing audit entries, and gaps in compliance evidence.\n\nMapleBridge Insurance is not a one-off case; it is part of this broader recurring pattern affecting multiple Canadian customers after migration.\n\nThis pattern is triggered by migration from legacy workflow tooling to the Orchestrator product and involves region-specific policy overrides failing due to rule precedence and schema normalization issues.\n\n[art_cbfb5f92862c, art_6be1b68b59cb, art_39c1434aa40a, art_f4a8c516b934, art_e9c20e0a23e0, art_981952a71434, art_b86a0ca2ce1e, art_54e35e2cb431, art_e697b3abe158, art_3db205cb21ca]",
+      "source_ids": [
+        "art_cbfb5f92862c",
+        "art_6be1b68b59cb",
+        "art_39c1434aa40a",
+        "art_f4a8c516b934",
+        "art_e9c20e0a23e0",
+        "art_981952a71434",
+        "art_b86a0ca2ce1e",
+        "art_54e35e2cb431",
+        "art_e697b3abe158",
+        "art_3db205cb21ca"
+      ],
+      "retrieved_artifact_ids": [
+        "art_cbfb5f92862c",
+        "art_6be1b68b59cb",
+        "art_39c1434aa40a",
+        "art_f4a8c516b934",
+        "art_e9c20e0a23e0",
+        "art_981952a71434",
+        "art_b86a0ca2ce1e",
+        "art_ad58f3ce1afd",
+        "art_54e35e2cb431",
+        "art_e697b3abe158",
+        "art_3db205cb21ca",
+        "art_9d3bef4ff8f4",
+        "art_545d172a6d99",
+        "art_4ebaee66ec66"
+      ],
+      "show_sources": false,
+      "tool_call_count": 8,
+      "retrieval_round_count": 2,
+      "model_call_count": 5,
+      "input_tokens": 33619,
+      "output_tokens": 1557,
+      "duration_ms": 15718,
+      "answer_chars": 1912,
+      "answer_words": 240,
+      "lexical_hits": {
+        "facts": {
+          "matched": 5,
+          "total": 9
+        },
+        "customers": {
+          "matched": 7,
+          "total": 7
+        }
+      }
+    }
+  ]
+}

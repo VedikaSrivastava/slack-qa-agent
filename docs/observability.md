@@ -23,6 +23,11 @@ correctness. Its evidence contract checks source attribution, citation membershi
 answerability behavior, not claim-level entailment; semantic judging and manual review remain
 separate.
 
+The final p19/r12/e13 take-home snapshot is deterministic and remains
+`semantic_quality: not_judged`; its semantic interpretation comes from manual review. Existing
+`candidate-*` judge artifacts are unaccepted because they predate recorded transfer
+acknowledgement, and no Langfuse trace output is used as evaluation evidence.
+
 ## Production approach
 
 For production, use a managed observability service or a properly operated self-hosted deployment

@@ -249,6 +249,48 @@ async def test_refinement_promotes_a_candidate_excerpt_to_full_evidence() -> Non
     assert sum(len(item.content) for item in evidence) <= MAX_CONTEXT_CHARS
 
 
+async def test_comparison_refinement_executes_all_preserved_queries() -> None:
+    candidate_a = _evidence("candidate-a", content="Full evidence for candidate A")
+    candidate_b = _evidence("candidate-b", content="Full evidence for candidate B")
+    candidate_excerpts = [
+        candidate_a.model_copy(update={"retrieval_origin": "search_excerpt"}),
+        candidate_b.model_copy(update={"retrieval_origin": "search_excerpt"}),
+    ]
+    queries = [
+        "supplier launch risk",
+        "Candidate A milestone",
+        "promised milestone details",
+        "Candidate B milestone",
+    ]
+    tools = FakeRetrievalTools(
+        search_results={
+            "supplier launch risk": [_hit("candidate-a"), _hit("candidate-b")],
+            "Candidate A milestone": [_hit("candidate-a")],
+            "promised milestone details": [_hit("candidate-a"), _hit("candidate-b")],
+            "Candidate B milestone": [_hit("candidate-b")],
+        },
+        artifacts={"candidate-a": candidate_a, "candidate-b": candidate_b},
+    )
+    nodes = _nodes(tools)
+    state = _state(
+        queries[0],
+        evidence=candidate_excerpts,
+        retrieval_round_count=1,
+        comparison_query="supplier launch risk",
+    )
+    state["search_queries"] = queries
+
+    result = await nodes.execute_retrieval(state)
+
+    assert [request.query for request in tools.search_requests] == queries
+    assert all(request.purpose == "evidence" for request in tools.search_requests)
+    assert [request.artifact_ids for request in tools.read_requests] == [
+        ["candidate-a", "candidate-b"]
+    ]
+    assert all(item.retrieval_origin == "lexical" for item in _result_evidence(result))
+    assert result["tool_call_count"] == len(queries) + 1
+
+
 async def test_ordinary_retrieval_keeps_profile_search_limit() -> None:
     tools = FakeRetrievalTools(search_results={"supplier status": []}, artifacts={})
     nodes = _nodes(tools)
@@ -535,7 +577,7 @@ async def test_comparison_grade_requires_full_evidence_and_preserves_follow_up_q
             supported_parts=["Candidate A appears plausible from the shortlist."],
             missing_parts=[],
             reason="The shortlist appears sufficient.",
-            refined_queries=[],
+            refined_queries=["Candidate A milestone", "Candidate B milestone"],
         )
     )
     model = Mock()
@@ -561,8 +603,10 @@ async def test_comparison_grade_requires_full_evidence_and_preserves_follow_up_q
 
     assert result["evidence_sufficient"] is False
     assert result["search_queries"] == [
-        "promised milestone details",
         "supplier launch risk",
+        "Candidate A milestone",
+        "promised milestone details",
+        "Candidate B milestone",
     ]
     assert result["missing_question_parts"] == [
         "Comparison candidates still require full-artifact evidence before selection."
