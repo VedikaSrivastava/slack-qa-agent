@@ -6,7 +6,7 @@ This file applies to the entire repository. Nested `AGENTS.md` files may narrow 
 
 Prioritize, in order: correctness and security, assignment requirements, reliability and observability, maintainability, performance and cost, then convenience. Choose the smallest design that satisfies the current requirement and known failure modes.
 
-This file is the working constitution. Lifecycle, Slack identity, decisions, and evaluation policy live in `docs/`. Do not duplicate those documents here.
+This file is the working constitution. Long-form local notes may exist under `docs/` on disk; that directory is gitignored and is not part of the submitted tree. Do not re-add it to git.
 
 ## Assignment guardrails
 
@@ -49,7 +49,7 @@ Keep responsibilities separated under `src/knowledge_assistant/`:
 - `execution/`: Inngest retries, concurrency, ordering, durable steps, and thread context
 - `integrations/slack/`: verified Slack ingress, routing, Agent Session publishing, and manifests
 - `persistence/`: PostgreSQL run ledger, `slack_turns`, migrations, and checkpoints
-- `evals/`: datasets, evaluators, matrix/runner/judge; versioned reports live in `evals/reports/`
+- `evals/`: datasets, evaluators, matrix/runner/judge; versioned reports are written to local `evals/reports/` and are not committed
 - `api/`: FastAPI wiring, lifecycle, health, and readiness
 - `application/`: transport-independent protocols (`QuestionProcessor`, `StreamingQuestionProcessor`)
 - `observability/`: logging configuration and correlation context
@@ -246,7 +246,7 @@ Evaluation rules:
 - Never optimize only for the seven known questions. Improvements must generalize and should be checked against a robustness suite.
 - Accept a quality change only after at least three official-suite repeats. A single repeat cannot separate improvement from live-model variance.
 - A CLI exit code of zero means the run completed and wrote a report; it does not mean every gate or answer passed. `strict_contract_passed` is not semantic correctness.
-- Preserve `evals/reports/` artifacts; never overwrite an existing report path. Do not quote rates from unaccepted `candidate-*` directories or treat Langfuse traces as submission evidence.
+- Preserve local `evals/reports/` artifacts; never overwrite an existing report path. Do not commit reports. Do not quote rates from unaccepted `candidate-*` directories or treat Langfuse traces as submission evidence.
 
 ## Dependencies, configuration, documentation, and Git
 
@@ -256,9 +256,10 @@ Evaluation rules:
 - Keep settings typed and validate required configuration at startup without echoing secret values.
 - Avoid silent fallbacks for models, profiles, databases, tracing, routing policy, and security settings.
 - Keep production defaults code-reviewed and versioned.
-- Update `README.md`, `.env.example`, `docs/`, commands, and this file when setup or observable working contracts change.
-- Keep examples runnable and limitations honest. Do not duplicate long explanations across code, comments, README, and `docs/`.
+- Update `README.md`, `.env.example`, commands, and this file when setup or observable working contracts change.
+- Keep examples runnable and limitations honest. Do not duplicate long explanations across code, comments, and README.
 - Do not touch `DESIGN.md`.
+- Do not commit `docs/` or `evals/reports/`; keep those artifacts on disk only.
 - Work on a feature branch, not directly on `main`.
 - Do not merge, force-push, rewrite history, delete branches, tag releases, or commit unless explicitly instructed.
 - Keep changes focused and avoid unrelated formatting churn.
@@ -284,7 +285,7 @@ uv run python -m knowledge_assistant.persistence.checkpoints
 
 For Docker or runtime-wiring changes, run the relevant Docker build or compose smoke test. For retrieval changes, run the supplied-database integration test locally when `data/synthetic_startup.sqlite` is available.
 
-For prompt, profile, retrieval, or graph quality changes, run the official matrix with at least three repeats when OpenAI access is authorized. Commands and current snapshot policy are in `README.md` and `docs/evaluations.md`. Live evaluation sends questions, retrieved evidence, and generated answers to OpenAI.
+For prompt, profile, retrieval, or graph quality changes, run the official matrix with at least three repeats when OpenAI access is authorized. Commands and current snapshot policy are in `README.md`. Live evaluation sends questions, retrieved evidence, and generated answers to OpenAI. Write reports under a new `evals/reports/<label>` path and leave them untracked.
 
 Never claim a command passed unless it was executed successfully. State when credentials or the supplied database prevented validation.
 
