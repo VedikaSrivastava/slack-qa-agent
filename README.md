@@ -2,6 +2,8 @@
 
 A Slack Q&A bot backed by the included read-only SQLite knowledge base. It supports grounded multi-turn answers, optional source display, and bounded retrieval.
 
+[Screen recording](https://drive.google.com/file/d/1rVp5-6ADHC9LO_stpBdYzfSEDQwUxOn3/view?usp=sharing): QA session with live progress, an unmentioned thread follow-up, mentioned thread followup and an abstention when evidence is insufficient.
+
 Guarantees versus best-effort behavior, accepted evaluation results, and known gaps are in [DESIGN.md](DESIGN.md).
 
 ## Prerequisites
