@@ -1,7 +1,8 @@
 # QA Agent
 
-A Slack Q&A bot backed by the included read-only SQLite knowledge base. It supports grounded
-multi-turn answers, optional source display, and bounded retrieval.
+A Slack Q&A bot backed by the included read-only SQLite knowledge base. It supports grounded multi-turn answers, optional source display, and bounded retrieval.
+
+Guarantees versus best-effort behavior, accepted evaluation results, and known gaps are in [DESIGN.md](DESIGN.md).
 
 ## Prerequisites
 
@@ -11,7 +12,9 @@ multi-turn answers, optional source display, and bounded retrieval.
 - a Slack workspace where you can create an app and use the Agent feature
 - [ngrok](https://ngrok.com/download) and a free ngrok account
 
-Python, PostgreSQL, the Slack CLI, and the Inngest CLI are not required on the host. The runtime uses `data/synthetic_startup.sqlite` and mounts it read-only.
+Python, PostgreSQL, the Slack CLI, and the Inngest CLI are not required on the host for the Slack runtime. The offline evaluation harness in Run checks needs [uv](https://docs.astral.sh/uv/). The runtime uses `data/synthetic_startup.sqlite` and mounts it read-only.
+
+Three official-suite repeats plus an optional judge pass call OpenAI for 21 agent runs and a second scoring pass, and incur real API spend.
 
 ## 1. Create and install the Slack app
 
@@ -20,7 +23,7 @@ Use [`slack-app-manifest.yaml`](slack-app-manifest.yaml) as the bootstrap manife
 1. Open [Slack's app dashboard](https://api.slack.com/apps) and select **Create New App**.
 2. Select **From an app manifest**, choose the workspace, select **YAML**, and paste the file.
 3. Create the app, open **OAuth & Permissions**, and select **Install to Workspace**.
-4. From **Your app credentials** Copy the **Bot User OAuth Token** (`xoxb-...`).
+4. From **Your app credentials**, copy the **Bot User OAuth Token** (`xoxb-...`).
 5. Open **App Settings > Basic Information > App Credentials** and copy the **Signing Secret**.
 
 The bootstrap has the Agent feature and required scopes but no event subscriptions because the local HTTPS URL does not exist yet. A complete manifest is generated in step 6. Slack may show Agent View suggestions for `message.im` and `app_home_opened`; they are expected, because this integration supports invited channel mentions rather than direct messages. If Slack displays **Reinstall to Workspace**, **Request to Reinstall**, or another authorization prompt after a manifest or scope change, complete it before testing.
@@ -84,15 +87,13 @@ docker compose --env-file .env.local logs --follow app slack-ingress migrate inn
 
 ## 4. Optional: enable Langfuse tracing
 
-Langfuse tracing is optional. The QA agent runs normally without it. To inspect local traces, start
-the self-hosted observability profile:
+Langfuse tracing is optional. The QA agent runs normally without it. To inspect local traces, start the self-hosted observability profile:
 
 ```bash
 docker compose --env-file .env.local --profile observability up -d --build
 ```
 
-Open <http://localhost:3000>, create a local Langfuse organisation and project, and add its public
-and secret keys to `.env.local`:
+Open <http://localhost:3000>, create a local Langfuse organization and project, and add its public and secret keys to `.env.local`:
 
 ```dotenv
 LANGFUSE_BASE_URL=http://langfuse-web:3000
@@ -106,10 +107,7 @@ Recreate the app container so it receives the new environment values:
 docker compose --env-file .env.local up -d --force-recreate app
 ```
 
-Langfuse records the LangGraph/LangChain execution tree, including model calls, retrieval steps,
-latency, token usage, and configured run metadata. Local evaluation reports remain independent of
-tracing and are written to `evals/reports/`; the offline evaluation harness deliberately disables
-Langfuse even if its keys are present in `.env.local`.
+Langfuse records the LangGraph/LangChain execution tree, including model calls, retrieval steps, latency, token usage, and configured run metadata. Local evaluation reports remain independent of tracing and are written to `evals/reports/`; the offline evaluation harness deliberately disables Langfuse even if its keys are present in `.env.local`.
 
 ## 5. Start the HTTPS tunnel
 
@@ -125,12 +123,11 @@ Start the tunnel in a second terminal:
 ngrok http 8001
 ```
 
-Copy the HTTPS forwarding origin. Port `8001` exposes only `POST /slack/events`; do not tunnel port
-`8000`. If the ngrok URL changes, regenerate and reapply the manifest in the next step.
+Copy the HTTPS forwarding origin. Port `8001` exposes only `POST /slack/events`; do not tunnel port `8000`. If the ngrok URL changes, regenerate and reapply the manifest in the next step. Leave the tunnel running while you test; shut it down when you are done — it is a public URL into the local stack.
 
 ## 6. Generate and apply the final manifest
 
-Keep Compose and ngrok running. Generate the complete manifest with the HTTPS origin from ngrok.
+Keep Compose and ngrok running. Generate the complete manifest, replacing `<public-tunnel-host>` with the ngrok hostname from step 5.
 
 ```bash
 public_base_url="https://<public-tunnel-host>"
@@ -144,8 +141,7 @@ Then:
 1. Open **App Manifest** in the Slack app dashboard and select **YAML**.
 2. Replace the bootstrap manifest with the generated output and save it.
 3. In Slack's `request_url` warning, select **Click here to verify** for `https://<public-tunnel-host>/slack/events`; once verification succeeds, Slack has applied the saved manifest changes.
-4. Got to Event Subscriptions and confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and
-   `message.groups`.
+4. Go to Event Subscriptions and confirm the bot events are `agent_session_stopped`, `app_mention`, `message.channels`, and `message.groups`.
 5. Complete any reinstall or reauthorization prompt.
 
 ## 7. Invite and test QA Agent
@@ -162,14 +158,96 @@ and then ask a question:
 @QA Agent For Verdant Bay, what is the approved live patch window?
 ```
 
-Replies in the same Slack thread continue the same agent conversation. Mention QA Agent again for
-an explicit follow-up; clear unmentioned follow-ups are handled conservatively.
+Replies in the same Slack thread continue the same agent conversation. Mention QA Agent again for an explicit follow-up; clear unmentioned follow-ups are handled conservatively.
 
-While the agent is working, Slack shows the current step on the streaming plan and a separate
-session line (`QA Agent Dev is working…`). Hover that session line to reveal native **Stop**. The
-app cannot invert that hover or change the loading copy; Slack owns that chrome.
+While the agent is working, Slack shows the current step on the streaming plan and a separate session line (`QA Agent is working…`). Hover that session line to reveal native **Stop**. The app cannot invert that hover or change the loading copy; Slack owns that chrome. If Stop wins, the answer is withheld; if delivery already claimed the run, a late Stop does not retract it. Cancellation is cooperative, so an in-flight model call may finish, but its result is not delivered.
+
+## Run checks
+
+With [uv](https://docs.astral.sh/uv/) installed:
+
+```bash
+uv sync --frozen --all-groups
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src tests
+uv run pytest
+```
+
+Or use Docker:
+
+```bash
+docker build --target validation .
+```
+
+Run the official deterministic benchmark directly with `uv`. It uses an in-process checkpointer and
+does not require Docker, Slack credentials, Langfuse, PostgreSQL, or a hosted evaluation service.
+`matrix` and `judge` take `--profiles` because they can run several comma-separated names; `run`
+takes a single `--profile`. `--label` names a new subdirectory under `evals/reports/`; change it on
+every run so an existing report is not overwritten.
+
+```bash
+uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
+  --repeats 3 --env-file .env.local --label <label>
+```
+
+The shipped configuration is prompt v22, retrieval v12, and protocol v13. A successful run is 6/7
+strict per repeat, 18/21 pooled, 0 flaky strict cases, 21/21 operations contract, and about 10s p50.
+The expected strict failure is `official-blueharbor-defection-risk`; that miss does not mean the
+harness is misconfigured.
+
+Use at least three repeats before accepting a change. A single repeat cannot separate a real
+improvement from live-model variance. Reports are written under `evals/reports/` locally and are
+not committed.
+
+Use the `run` subcommand when you want the generated answers themselves; `matrix` reports metrics
+only. `run` refuses to overwrite an existing path, so reruns need a new filename:
+
+```bash
+uv run python -m knowledge_assistant.evals run --suite full \
+  --profile split-gpt-5.4-hybrid --env-file .env.local \
+  --output evals/reports/<label>/answers.json
+```
+
+This live command sends the seven questions, retrieved evidence, and generated answers to OpenAI. Run it only with authorization for that transfer. Offline evaluation deliberately disables Langfuse. Exit code zero means the run completed and wrote a valid report; it does not mean every answer or deterministic gate passed.
+
+Current model split for this build:
+
+- responder/router: `gpt-5.4-nano`
+- resolve_question: `gpt-5.4-nano`
+- retrieval planning: `gpt-5.4`
+- evidence grading: `gpt-5.4-mini`
+- answer generation: `gpt-5.4`
+- grounding verification: `gpt-5.4-mini`
+- repair: `gpt-5.4`
+
+### Optional semantic evaluation: authorization required
+
+A judge run additionally sends generated answers and reference answers to the judge model. It pins
+`gpt-5` rather than the runtime 5.4 split so scoring stays independent of the agent models.
+
+```bash
+uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
+  --profiles split-gpt-5.4-hybrid --judge-model gpt-5 \
+  --env-file .env.local --confirm-data-transfer
+```
+
+`finalists` is only an example label; use a new unused name if that folder already exists.
+
+When dependencies change, regenerate the lockfile at the repository root:
+
+```bash
+uv lock
+uv sync --frozen --all-groups
+```
 
 ## Troubleshooting
+
+### Expected behavior, not bugs
+
+- After a clarification, replies such as `every`, `both`, or `all of them` may get another clarification instead of being resolved.
+- Ambiguous unmentioned thread replies stay silent by design; mention the bot again if it should answer.
+- `can you check the conversation history` can return the generic capability response instead of reading the thread.
 
 If Slack cannot verify the Request URL:
 
@@ -193,96 +271,15 @@ If unmentioned follow-ups do not work:
 - confirm `message.channels` is subscribed, plus `message.groups` and `groups:history` for private
   channels;
 - begin the thread with an explicit mention and wait for its answer;
-- inspect **Route Slack turn** in the Inngest UI; ambiguous messages intentionally stay silent.
+- inspect **Route Slack turn** in the Inngest UI.
 
 If progress or Stop is missing:
 
 - confirm the Slack Agent feature is enabled and the app has `assistant:write`;
 - confirm `agent_session_stopped` is subscribed;
-- hover the session line `QA Agent Dev is working…` — Slack shows native Stop only on hover, and
+- hover the session line `QA Agent is working…` — Slack shows native Stop only on hover, and
   the app cannot make that control the default;
 - inspect logs for `slack_stream_open_failed`; a stream-open failure still permits one final answer.
-
-## Run checks
-
-With [uv](https://docs.astral.sh/uv/) installed:
-
-```bash
-uv sync --frozen --all-groups
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src tests
-uv run pytest
-```
-
-Or use Docker:
-
-```bash
-docker build --target validation .
-```
-
-Run the official deterministic benchmark directly with `uv`. It uses an in-process checkpointer and
-does not require Docker, Slack credentials, Langfuse, PostgreSQL, or a hosted evaluation service:
-
-```bash
-uv run python -m knowledge_assistant.evals matrix --profiles split-gpt-5.4-hybrid --suite full \
-  --repeats 3 --env-file .env.local --output-dir evals/reports/<label>
-```
-
-Use at least three repeats before accepting a change. A single repeat cannot separate a real
-improvement from live-model variance. Reports are written under `evals/reports/` locally and are
-not committed.
-
-Add a `run` when you need the generated answer text rather than metrics; the `matrix` report stores
-metrics only. `run` refuses to overwrite an existing path, so reruns need a new filename:
-
-```bash
-uv run python -m knowledge_assistant.evals run --suite full \
-  --profile split-gpt-5.4-hybrid --env-file .env.local \
-  --output evals/reports/<label>/answers.json
-```
-
-This live command sends the seven questions, retrieved evidence, and generated answers to OpenAI.
-Run it only with authorization for that transfer. Offline evaluation deliberately disables
-Langfuse. Exit code zero means the run completed and wrote a valid report; it does not mean every
-answer or deterministic gate passed.
-
-Current production-model split for this build:
-
-- responder/router: `gpt-5.4-nano`
-- resolve_question: `gpt-5.4-nano`
-- retrieval planning: `gpt-5.4`
-- evidence grading: `gpt-5.4-mini`
-- answer generation: `gpt-5.4`
-- grounding verification: `gpt-5.4-mini`
-- repair: `gpt-5.4`
-
-Latest matrix run (`split-gpt-5.4-hybrid`, prompt `v22`, three repeats, 21 case-runs) is 6/7
-strict-contract pass on every repeat, 1.0 operations contract, 0 errors, no budget violations, and
-no flaky cases. The single persistent failure is `official-blueharbor-defection-risk`, which fails
-`exact_dates` when it answers and `answerability_behavior` on the two case-runs where it abstains.
-
-### Optional semantic evaluation: authorization required
-
-A judge run additionally sends generated answers and reference answers to the judge model.
-No authorized judge run has been executed for `split-gpt-5.4-hybrid` yet:
-
-```bash
-uv run python -m knowledge_assistant.evals judge --label finalists --suite full \
-  --profiles split-gpt-5.4-hybrid --judge-model gpt-5 \
-  --env-file .env.local --confirm-data-transfer
-```
-
-Judge output is a diagnostic, not an assignment pass threshold. The default take-home evidence is
-the official deterministic run plus manual review. Derived and multi-turn suites are
-candidate-authored regression checks, not held-out proof.
-
-When dependencies change, regenerate the lockfile at the repository root:
-
-```bash
-uv lock
-uv sync --frozen --all-groups
-```
 
 ## Stop or reset
 
